@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { LigaturesAddon } from "@xterm/addon-ligatures";
+import { buildTerminalFontFamily } from "../lib/fonts";
 
 const props = defineProps<{ sessionId: number }>();
 
@@ -35,12 +37,18 @@ onMounted(async () => {
   if (!host.value) return;
 
   term = new Terminal({
-    fontFamily:
-      '"MesloLGM Nerd Font Mono", "Cascadia Mono", "Consolas", "Microsoft YaHei", "Noto Sans SC", "monospace"',
+    // Leading font is detected at runtime so the canvas renderer (which only
+    // honors the first resolvable family) always lands on an installed,
+    // monospace font; an installed ligature font is preferred.
+    fontFamily: buildTerminalFontFamily(),
     fontSize: 14,
     lineHeight: 1.2,
     cursorBlink: true,
     scrollback: 5000,
+    // LigaturesAddon registers a character joiner, which xterm.js marks as
+    // (EXPERIMENTAL) and gates behind this flag; without it loadAddon throws
+    // and the whole terminal setup (event listeners included) is skipped.
+    allowProposedApi: true,
     theme: {
       background: "#1e1e1e",
       foreground: "#d4d4d4",
@@ -53,6 +61,12 @@ onMounted(async () => {
   term.loadAddon(fitAddon);
   term.open(host.value);
   fit();
+
+  // Ligatures (e.g. -> => for JetBrains Mono / Fira Code). In the Tauri
+  // WebView there is no Local Font Access API, so the addon uses its fallback
+  // matcher + the font's `calt` feature; fonts without ligature glyphs are
+  // rendered verbatim. Must be loaded AFTER open().
+  term.loadAddon(new LigaturesAddon());
 
   term.onData((data) => {
     if (dead) return;

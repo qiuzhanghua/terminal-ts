@@ -16,14 +16,22 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 
 ## 中文 / 图标显示 · Chinese / icon rendering
 
-终端字体链 / Terminal font chain（`src/components/TerminalView.vue`）：
+终端字体链由 xterm 的 **canvas 渲染器**绘制（`src/lib/fonts.ts`）。WebKit 的 canvas **只认链里第一个能解析的字体**——链首若未安装，canvas 直接回退成比例默认字体、整条链作废（字母错位/2 倍宽/无连字）。因此链**必须从本机真实已安装的字体开始**：用哨兵字体探测（`14px "X", monospace` vs `14px "__missing__", monospace` 的宽度对比）挑出已安装的 Nerd/连字字体置于链首，系统等宽（Menlo，macOS 必有）永远作为兜底：
 
 ```
-"MesloLGM Nerd Font Mono" → "Cascadia Mono" → "Consolas" → "Microsoft YaHei" → "Noto Sans SC" → "monospace"
+已装的 Nerd Font → 已装的连字等宽（JetBrains Mono / Fira Code / Cascadia）→ Menlo 等系统等宽 → CJK → monospace
 ```
 
-- **Nerd Font 必须放在中文字体之前**：oh-my-posh 等提示符使用 Nerd Font / powerline 私有区图标（U+E0B0–U+E0B6、U+EA83、U+F00C 等）。中文字体（微软雅黑/宋体）会把私有区码位错误映射成汉字字形，导致显示为 `瞵間` 类乱码；Nerd Font 优先可保证图标正确渲染。
-  **Nerd Font must come before CJK fonts**: prompts like oh-my-posh use private-use-area (PUA) glyphs from Nerd Font / powerline (U+E0B0–U+E0B6, U+EA83, U+F00C, …). CJK fonts (Microsoft YaHei/SimSun) mis-map those PUA codepoints to CJK ideographs, producing mojibake like `瞵間`; putting the Nerd Font first renders the icons correctly.
+- **连字字体排在链首**：只有让 JetBrains Mono / Fira Code / Cascadia 等带 `calt` 连字字形的字体排在链首，`->`、`=>`、`===` 才会渲染成连字；且探测阈值必须低（0.1）——JetBrains Mono 与 Menlo 的字宽差仅 ~0.4px，0.5 会漏判成"不可用"。**不要用 `serif`/`sans`/单独的 `monospace` 作探测基准**：未知字体会落回默认字体而非该泛型（`serif` 会误判），而 `monospace` 在 macOS 就是 Menlo 会互相抵消。
+- **Nerd Font 必须放在中文字体之前**：oh-my-posh 等提示符使用 Nerd Font / powerline 私有区图标（U+E0B0–U+E0B6、U+EA83、U+F00C 等）。中文字体（微软雅黑/宋体/PingFang）会把私有区码位错误映射成汉字字形，导致显示为 `瞵間` 类乱码；Nerd Font 优先可保证图标正确渲染。
+  **Nerd Font must come before CJK fonts**: prompts like oh-my-posh use private-use-area (PUA) glyphs from Nerd Font / powerline (U+E0B0–U+E0B6, U+EA83, U+F00C, …). CJK fonts (Microsoft YaHei/SimSun/PingFang) mis-map those PUA codepoints to CJK ideographs, producing mojibake like `瞵間`; putting the Nerd Font first renders the icons correctly.
+- **macOS 下安装 Nerd Font**（Homebrew 已合并 cask-fonts 仓库，直接安装即可）/ Install a Nerd Font on macOS:
+  ```bash
+  brew install --cask font-meslo-lg-nerd-font      # 推荐 / recommended（与 Windows 一致）
+  # 其他可选 / alternatives: font-jetbrains-mono-nerd-font, font-fira-code-nerd-font, font-hack-nerd-font
+  ```
+  未安装任何 Nerd Font 时，程序会自动降级到已装的等宽字体（如 JetBrains Mono / Menlo），但 oh-my-posh 图标可能显示为方块。
+- **连字 / Ligatures**（`@xterm/addon-ligatures`）：JetBrains Mono / Fira Code 等带 `calt` 连字字形的字体可渲染 `->`、`=>`、`===` 等连字。Tauri WebView 无 Local Font Access API，插件走 fallback 匹配；无连字字形的字体（Menlo 等）原样显示，不受影响。
 - **编码管道为纯 UTF-8 字节透传**（ConPTY 输入/输出本身是 UTF-8），不要在 Rust / JS 层做 GBK 等转码。
   **The pipeline is raw UTF-8 bytes end to end** (ConPTY I/O is UTF-8 already); do not add GBK or other transcoding in the Rust/JS layer.
 
