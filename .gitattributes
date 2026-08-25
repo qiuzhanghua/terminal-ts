@@ -1,0 +1,11 @@
+# Normalize all text files to LF, matching the tauri-starter convention.
+* text=auto eol=lf
+
+# Windows batch scripts must keep CRLF line endings
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must not be normalized
+*.png binary
+*.ico binary
+*.icns binary
