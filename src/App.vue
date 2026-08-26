@@ -115,6 +115,7 @@ onMounted(async () => {
     console.error("failed to load config:", e);
     resolvedTheme.value = resolveTheme("dark", null);
   }
+
   addTab();
   window.addEventListener("keydown", onKeydown, true);
 });
@@ -139,7 +140,7 @@ onBeforeUnmount(() => {
         <span class="tab-title">{{ tab.title }}</span>
         <button class="tab-close" title="关闭标签页" @click.stop="closeTab(tab.id)">×</button>
       </div>
-      <button class="tab-add" title="新建标签页" @click="addTab">＋</button>
+      <button class="tab-add" title="新建标签页" @click="addTab()">＋</button>
     </div>
     <div class="terminals">
       <TerminalView

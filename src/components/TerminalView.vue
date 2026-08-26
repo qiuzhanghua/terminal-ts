@@ -39,6 +39,11 @@ let dead = false;
 
 function fit(): void {
   if (!fitAddon || dead) return;
+  const el = host.value;
+  // Skip hidden (v-show display:none) terminals: fitting a 0-size element
+  // resizes the PTY to 1-2 columns, which makes the shell repaint and can
+  // wipe the terminal buffer (lost history when switching tabs).
+  if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
   try {
     fitAddon.fit();
   } catch {

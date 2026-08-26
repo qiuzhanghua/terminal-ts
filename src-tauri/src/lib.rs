@@ -12,7 +12,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -187,7 +187,8 @@ fn spawn_shell(
         cmd.arg("-NoLogo");
         cmd.env("POWERSHELL_UPDATECHECK", "Off");
     }
-    if let Some(cwd) = config.start_cwd.clone() {
+    // cwd priority: config.start_cwd > home dir.
+    if let Some(cwd) = config.start_cwd.clone().filter(|c| Path::new(c).is_dir()) {
         cmd.cwd(cwd);
     } else if let Some(home) = dirs::home_dir() {
         cmd.cwd(home);
