@@ -10,13 +10,16 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
   - 非 Windows: 读取 `$SHELL` 环境变量，默认 `/bin/bash` / reads `$SHELL`, falls back to `/bin/bash`
 - **真实 PTY 会话 / Real PTY sessions**：Windows 使用 ConPTY，其他平台使用 Unix PTY，交互式程序（vim、htop 等）完整可用 / ConPTY on Windows, Unix PTY elsewhere; interactive programs (vim, htop, …) work fully
 - **支持管道、重定向 / Pipes & redirection**：`ls -la | grep rust`、`echo hello > file.txt`、`cat < input.txt`
-- **多标签页 / Multiple tabs**：新建（＋）、关闭（× / 鼠标中键）、切换 / new (＋), close (× / middle-click), switch
+- **多标签页 / Multiple tabs**：新建（＋ / Ctrl+Shift+T）、关闭（× / 鼠标中键 / Ctrl+Shift+W）、切换（Ctrl+Tab / Ctrl+PageUp·PageDown）/ new (＋ / Ctrl+Shift+T), close (× / middle-click / Ctrl+Shift+W), switch (Ctrl+Tab / Ctrl+PageUp·PageDown)
+- **复制粘贴 / Copy & paste**：Ctrl+Shift+C 复制选中、Ctrl+Shift+V 粘贴、右键（有选中→复制，无选中→粘贴）/ copy selection (Ctrl+Shift+C), paste (Ctrl+Shift+V), right-click (copy if selection, else paste)
+- **终端内搜索 / In-terminal search**：Ctrl+Shift+F，Enter/Shift+Enter 下一个/上一个，Esc 关闭 / open with Ctrl+Shift+F; Enter / Shift+Enter for next / previous; Esc closes
+- **字体缩放 / Font zoom**：Ctrl+= / Ctrl+- 缩放、Ctrl+0 复位 / zoom with Ctrl+= / Ctrl+-, reset with Ctrl+0
 - **窗口标题联动 / Window title sync**：shell 通过 OSC 0/2 设置标题时，同步更新窗口标题 / window title follows the shell's OSC 0/2 title
 - 进程退出后自动关闭该标签页；若为最后一个标签页则关闭窗口 / auto-closes the tab when the shell exits; closes the window when it was the last tab
 
 ## 中文 / 图标显示 · Chinese / icon rendering
 
-终端字体链由 xterm 的 **canvas 渲染器**绘制（`src/lib/fonts.ts`）。WebKit 的 canvas **只认链里第一个能解析的字体**——链首若未安装，canvas 直接回退成比例默认字体、整条链作废（字母错位/2 倍宽/无连字）；Blink（Windows WebView2）则按字形回退，链后部的字体仍会参与（图标、中文）。因此链**必须从本机真实已安装的字体开始**：用哨兵字体探测（`14px "X", monospace` vs `14px "__missing__", monospace` 的宽度对比）挑出已安装字体，优先级（最佳在前）：
+终端基于 **xterm ≥ 6.0.0**（5.4+ 起只有 DOM 渲染器——canvas 渲染器与 `rendererType` 选项已移除；**6.0.0 修复了 DOM 渲染器不绘制空格背景的问题**，oh-my-posh 的 `空格✓空格` 蓝色段才能正常显示，因此不要降级到 5.5 及更早）。字体链在 `src/lib/fonts.ts` 里用哨兵字体探测（`14px "X", monospace` vs `14px "__missing__", monospace` 的宽度对比，先 `await document.fonts.ready`）挑出本机已安装字体，优先级（最佳在前）：
 
 ```
 ① 带连字的 Nerd Font（JetBrainsMono/FiraCode/CaskaydiaCove Nerd Font，连字 + 图标一个字体搞定）

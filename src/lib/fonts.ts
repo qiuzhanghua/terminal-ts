@@ -39,11 +39,17 @@
  */
 
 // Nerd-patched ligature fonts: ligature glyphs AND PUA icons in one font.
-// (FiraCode Nerd Font Mono is the classic example; JetBrainsMono Nerd Font /
-// CaskaydiaCove Nerd Font are the JetBrains Mono / Cascadia Code equivalents.)
+// Nerd Fonts v3 renamed the families (e.g. "JetBrainsMono NF" / "JetBrainsMono
+// NFM"); older releases used "JetBrainsMono Nerd Font" / "... Nerd Font Mono".
+// Both spellings are listed so either install is detected. The "Mono" variants
+// (NFM) force every glyph to the same advance and are preferred for terminals.
 const LIGATURE_NERD_FONTS = [
+  "JetBrainsMono NFM",
+  "JetBrainsMono NF",
   "JetBrainsMono Nerd Font Mono",
+  "JetBrainsMono Nerd Font",
   "FiraCode Nerd Font Mono",
+  "FiraCode Nerd Font",
   "CaskaydiaCove Nerd Font",
   "CaskaydiaCove Nerd Font Mono",
   "SauceCodePro Nerd Font Mono",
@@ -62,20 +68,21 @@ const NERD_FONTS = [
   "UbuntuMono Nerd Font Mono",
 ];
 
-// Always-listed system monospace fallbacks. Menlo first: it is guaranteed on
-// macOS and is what WebKit's canvas resolves to by default, so it can always
-// serve as a safe lead/fallback. (It has no ligatures.)
+// Always-listed system monospace fallbacks, ordered so the FIRST installed
+// entry on each platform resolves: Consolas (Windows), Menlo (macOS), etc.
+// (None of them have ligatures.)
 const SYSTEM_MONOS = [
+  "Consolas",
   "Menlo",
   "SF Mono",
+  "Cascadia Mono",
   "Monaco",
-  "Consolas",
+  "Courier New",
+  "DejaVu Sans Mono",
+  "Liberation Mono",
   "Fira Mono",
   "Roboto Mono",
   "Ubuntu Mono",
-  "DejaVu Sans Mono",
-  "Liberation Mono",
-  "Courier New",
 ];
 
 const CJK_FONTS = [
@@ -112,7 +119,17 @@ function isFontAvailable(family: string): boolean {
   }
 }
 
-export function buildTerminalFontFamily(): string {
+export async function buildTerminalFontFamily(): Promise<string> {
+  // Wait for the font system to be ready before probing: probing too early
+  // (e.g. while the first page load is still busy) can report every font as
+  // unavailable, leaving the chain to lead with a platform-specific fallback
+  // (Menlo on Windows) that canvas cannot resolve → whole terminal renders
+  // with a proportional default.
+  try {
+    await document.fonts.ready;
+  } catch {
+    // ignore; probe below still runs
+  }
   const detected = [...LIGATURE_NERD_FONTS, ...LIGATURE_MONOS, ...NERD_FONTS].filter(isFontAvailable);
   const chain = [...detected, ...SYSTEM_MONOS, ...CJK_FONTS, "ui-monospace", "monospace"];
   return chain.map((f) => `"${f}"`).join(", ");

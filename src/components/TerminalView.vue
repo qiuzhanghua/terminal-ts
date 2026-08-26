@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { LigaturesAddon } from "@xterm/addon-ligatures";
+import { SearchAddon } from "@xterm/addon-search";
 import { buildTerminalFontFamily } from "../lib/fonts";
 
 const props = defineProps<{ sessionId: number }>();
@@ -15,9 +17,13 @@ const emit = defineEmits<{
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
+const searchVisible = ref(false);
+const searchTerm = ref("");
+const searchInput = ref<HTMLInputElement | null>(null);
 
 let term: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
+let searchAddon: SearchAddon | null = null;
 let unlisteners: UnlistenFn[] = [];
 let resizeObserver: ResizeObserver | null = null;
 let dead = false;
@@ -33,18 +39,82 @@ function fit(): void {
 
 defineExpose({ fit });
 
+/* ---------- clipboard ---------- */
+
+async function copySelection(): Promise<void> {
+  if (!term) return;
+  const sel = term.getSelection();
+  if (!sel) return;
+  try {
+    await writeText(sel);
+  } catch (e) {
+    console.error("copy failed:", e);
+  }
+}
+
+async function pasteClipboard(): Promise<void> {
+  if (dead || !term) return;
+  try {
+    const text = await readText();
+    if (!text) return;
+    const bytes = Array.from(new TextEncoder().encode(text));
+    invoke("write_session", { id: props.sessionId, data: bytes }).catch(() => {});
+  } catch (e) {
+    console.error("paste failed:", e);
+  }
+}
+
+/* ---------- zoom ---------- */
+
+function zoomBy(delta: number): void {
+  if (!term) return;
+  const current = term.options.fontSize ?? 14;
+  const next = Math.min(48, Math.max(8, current + delta));
+  if (next !== current) {
+    term.options.fontSize = next;
+    fit();
+  }
+}
+
+function resetZoom(): void {
+  if (!term) return;
+  term.options.fontSize = 14;
+  fit();
+}
+
+/* ---------- search ---------- */
+
+function openSearch(): void {
+  if (!term) return;
+  searchVisible.value = true;
+  nextTick(() => searchInput.value?.focus());
+}
+
+function closeSearch(): void {
+  searchVisible.value = false;
+  searchTerm.value = "";
+  searchAddon?.clearDecorations();
+}
+
+function find(next: boolean): void {
+  if (!searchAddon || !searchTerm.value) return;
+  if (next) searchAddon.findNext(searchTerm.value, { incremental: true });
+  else searchAddon.findPrevious(searchTerm.value, { incremental: true });
+}
+
 onMounted(async () => {
   if (!host.value) return;
 
   term = new Terminal({
-    // Leading font is detected at runtime so the canvas renderer (which only
-    // honors the first resolvable family) always lands on an installed,
-    // monospace font; an installed ligature font is preferred.
-    fontFamily: buildTerminalFontFamily(),
+    // Leading font is detected at runtime (after document.fonts is ready) so
+    // the canvas renderer — which honors the first resolvable family — always
+    // lands on an installed, monospace font; an installed ligature / Nerd
+    // font is preferred.
+    fontFamily: await buildTerminalFontFamily(),
     fontSize: 14,
     lineHeight: 1.2,
     cursorBlink: true,
-    scrollback: 5000,
+    scrollback: 10000,
     // LigaturesAddon registers a character joiner, which xterm.js marks as
     // (EXPERIMENTAL) and gates behind this flag; without it loadAddon throws
     // and the whole terminal setup (event listeners included) is skipped.
@@ -59,14 +129,59 @@ onMounted(async () => {
 
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+  searchAddon = new SearchAddon();
+  term.loadAddon(searchAddon);
   term.open(host.value);
   fit();
 
-  // Ligatures (e.g. -> => for JetBrains Mono / Fira Code). In the Tauri
-  // WebView there is no Local Font Access API, so the addon uses its fallback
-  // matcher + the font's `calt` feature; fonts without ligature glyphs are
-  // rendered verbatim. Must be loaded AFTER open().
-  term.loadAddon(new LigaturesAddon());
+  // Ligatures (e.g. -> => for JetBrains Mono / Fira Code). The joiner API is
+  // DOM-renderer-only, which is fine: since xterm 6.0.0 the DOM renderer also
+  // paints backgrounds on space characters, so colors and ligatures coexist.
+  // Guarded because @xterm/addon-ligatures 0.10 predates xterm 6; if it throws
+  // mid-onMounted the listeners below would never register.
+  try {
+    term.loadAddon(new LigaturesAddon());
+  } catch (e) {
+    console.error("ligatures addon failed to load:", e);
+  }
+
+  // Terminal-level shortcuts. Returning false means xterm neither handles the
+  // key nor sends it to the shell.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== "keydown") return true;
+    const ctrlShift = e.ctrlKey && e.shiftKey;
+    if (ctrlShift && e.key === "C") {
+      e.preventDefault();
+      copySelection();
+      return false;
+    }
+    if (ctrlShift && e.key === "V") {
+      e.preventDefault();
+      pasteClipboard();
+      return false;
+    }
+    if (ctrlShift && e.key === "F") {
+      e.preventDefault();
+      openSearch();
+      return false;
+    }
+    if (e.ctrlKey && (e.key === "=" || e.key === "+")) {
+      e.preventDefault();
+      zoomBy(1);
+      return false;
+    }
+    if (e.ctrlKey && e.key === "-") {
+      e.preventDefault();
+      zoomBy(-1);
+      return false;
+    }
+    if (e.ctrlKey && e.key === "0") {
+      e.preventDefault();
+      resetZoom();
+      return false;
+    }
+    return true;
+  });
 
   term.onData((data) => {
     if (dead) return;
@@ -99,6 +214,17 @@ onMounted(async () => {
     }),
   );
 
+  // Windows terminal convention: right-click copies the selection if there is
+  // one, otherwise pastes the clipboard.
+  host.value.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (term?.hasSelection()) {
+      copySelection();
+    } else {
+      pasteClipboard();
+    }
+  });
+
   resizeObserver = new ResizeObserver(() => fit());
   resizeObserver.observe(host.value);
 });
@@ -111,20 +237,81 @@ onBeforeUnmount(() => {
   term?.dispose();
   term = null;
   fitAddon = null;
+  searchAddon = null;
 });
 </script>
 
 <template>
-  <div ref="host" class="terminal-host"></div>
+  <div ref="host" class="terminal-host">
+    <div v-if="searchVisible" class="search-bar" @keydown.esc.prevent="closeSearch">
+      <input
+        ref="searchInput"
+        v-model="searchTerm"
+        placeholder="搜索 / Search"
+        spellcheck="false"
+        @input="find(true)"
+        @keydown.enter.prevent="find(true)"
+        @keydown.shift.enter.prevent="find(false)"
+      />
+      <button title="上一个 / Previous (Shift+Enter)" @click="find(false)">↑</button>
+      <button title="下一个 / Next (Enter)" @click="find(true)">↓</button>
+      <button title="关闭 / Close (Esc)" @click="closeSearch">×</button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
 .terminal-host {
+  position: relative;
   width: 100%;
   height: 100%;
 }
 
 .terminal-host :deep(.xterm) {
   height: 100%;
+}
+
+.search-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px;
+  background: #2d2d2d;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.search-bar input {
+  width: 180px;
+  padding: 4px 8px;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-size: 12px;
+  outline: none;
+}
+
+.search-bar input:focus {
+  border-color: #396cd8;
+}
+
+.search-bar button {
+  border: none;
+  background: transparent;
+  color: #cccccc;
+  font-size: 13px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.search-bar button:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 </style>

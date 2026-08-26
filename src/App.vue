@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import TerminalView from "./components/TerminalView.vue";
@@ -69,8 +69,39 @@ function onExit(id: number): void {
   closeTab(id);
 }
 
+/* ---------- global shortcuts (tab management) ---------- */
+
+function switchTab(dir: number): void {
+  const n = tabs.value.length;
+  if (n === 0 || activeId.value == null) return;
+  const idx = tabs.value.findIndex((t) => t.id === activeId.value);
+  if (idx === -1) return;
+  activate(tabs.value[(idx + dir + n) % n].id);
+}
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.ctrlKey && e.shiftKey && e.key === "T") {
+    e.preventDefault();
+    addTab();
+  } else if (e.ctrlKey && e.shiftKey && e.key === "W") {
+    e.preventDefault();
+    if (activeId.value != null) closeTab(activeId.value);
+  } else if (e.ctrlKey && e.key === "Tab") {
+    e.preventDefault();
+    switchTab(e.shiftKey ? -1 : 1);
+  } else if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) {
+    e.preventDefault();
+    switchTab(e.key === "PageDown" ? 1 : -1);
+  }
+}
+
 onMounted(() => {
   addTab();
+  window.addEventListener("keydown", onKeydown, true);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown, true);
 });
 </script>
 

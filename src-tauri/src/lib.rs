@@ -88,10 +88,15 @@ fn spawn_shell(
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     // Suppress pwsh startup noise: version banner, update notice and
-    // profile-load-time message.
+    // profile-load-time message. Also force $PSStyle.OutputRendering='Ansi':
+    // under ConPTY pwsh's first prompt is otherwise rendered without colors
+    // ('Host' strips ANSI), which breaks oh-my-posh segments.
     if shell == "pwsh" {
         cmd.arg("-NoLogo");
         cmd.arg("-NoProfileLoadTime");
+        cmd.arg("-NoExit");
+        cmd.arg("-Command");
+        cmd.arg("$PSStyle.OutputRendering='Ansi'");
         cmd.env("POWERSHELL_UPDATECHECK", "Off");
     } else if shell == "powershell" {
         cmd.arg("-NoLogo");
@@ -226,6 +231,7 @@ fn kill_session(state: State<'_, SessionManager>, id: u64) -> Result<(), String>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(SessionManager::default())
         .invoke_handler(tauri::generate_handler![
             spawn_shell,
