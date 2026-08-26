@@ -71,7 +71,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             shell: None,
-            font_size: 14,
+            font_size: 16,
             font_family: None,
             theme: "dark".to_string(),
             cursor_blink: true,
@@ -88,7 +88,7 @@ struct ConfigPayload {
     path: String,
 }
 
-/// `<app config dir>/config.json`, e.g. `%APPDATA%\dev.taiji.terminal-ts`.
+/// `<app config dir>/config.json`, e.g. `%APPDATA%\dev.taiji.terminal`.
 fn config_path(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .app_config_dir()
@@ -395,7 +395,7 @@ mod tests {
     fn app_config_defaults() {
         let c = AppConfig::default();
         assert_eq!(c.shell, None);
-        assert_eq!(c.font_size, 14);
+        assert_eq!(c.font_size, 16);
         assert_eq!(c.font_family, None);
         assert_eq!(c.theme, "dark");
         assert!(c.cursor_blink);

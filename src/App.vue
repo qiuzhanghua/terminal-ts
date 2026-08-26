@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
         :key="tab.id"
         v-show="tab.id === activeId"
         :session-id="tab.id"
-        :font-size="cfg?.fontSize ?? 14"
+        :font-size="cfg?.fontSize ?? 16"
         :font-family="cfg?.fontFamily ?? ''"
         :theme="resolvedTheme ?? undefined"
         :cursor-blink="cfg?.cursorBlink ?? true"

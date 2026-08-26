@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    terminal_ts_lib::run()
+    terminal_lib::run()
 }

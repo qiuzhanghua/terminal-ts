@@ -86,7 +86,7 @@ async function pasteClipboard(): Promise<void> {
 
 function zoomBy(delta: number): void {
   if (!term) return;
-  const current = term.options.fontSize ?? 14;
+  const current = term.options.fontSize ?? 16;
   const next = Math.min(48, Math.max(8, current + delta));
   if (next !== current) {
     term.options.fontSize = next;
@@ -96,7 +96,7 @@ function zoomBy(delta: number): void {
 
 function resetZoom(): void {
   if (!term) return;
-  term.options.fontSize = props.fontSize ?? 14;
+  term.options.fontSize = props.fontSize ?? 16;
   fit();
 }
 
@@ -130,7 +130,7 @@ onMounted(async () => {
     // ligature / Nerd font is preferred. config.json can override with
     // `fontFamily` / `font_size` / `theme` / `cursor_blink` / `scrollback`.
     fontFamily: props.fontFamily && props.fontFamily.length > 0 ? props.fontFamily : await buildTerminalFontFamily(),
-    fontSize: props.fontSize ?? 14,
+    fontSize: props.fontSize ?? 16,
     lineHeight: 1.2,
     cursorBlink: props.cursorBlink ?? true,
     scrollback: props.scrollback ?? 10000,
