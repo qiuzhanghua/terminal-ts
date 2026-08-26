@@ -7,6 +7,7 @@
 //! Each tab owns one real PTY session (ConPTY on Windows), streamed to the
 //! frontend via `terminal-output` / `terminal-exit` events.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,8 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
-/// Max bytes forwarded per `terminal-output` event.
-const READ_CHUNK: usize = 8192;
+/// Max bytes read from the pty per `terminal-output` event. Output is
+/// base64-encoded, so larger chunks stay compact on the wire.
+const READ_CHUNK: usize = 65536;
 
 /// A live shell session backed by a PTY.
 struct Session {
@@ -36,7 +38,8 @@ struct SessionManager {
 #[derive(Clone, Serialize)]
 struct OutputPayload {
     id: u64,
-    data: Vec<u8>,
+    /// Base64-encoded pty output (compact vs. JSON number[]).
+    data: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -87,12 +90,17 @@ struct ConfigPayload {
 
 /// `<app config dir>/config.json`, e.g. `%APPDATA%\dev.taiji.terminal-ts`.
 fn config_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|dir| dir.join("config.json"))
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("config.json"))
 }
 
 /// Read the user config; creates a default file on first run.
 fn load_config(app: &AppHandle) -> AppConfig {
-    let Some(path) = config_path(app) else { return AppConfig::default() };
+    let Some(path) = config_path(app) else {
+        return AppConfig::default();
+    };
     match std::fs::read_to_string(&path) {
         Ok(content) if !content.trim().is_empty() => {
             serde_json::from_str(&content).unwrap_or_default()
@@ -153,7 +161,12 @@ fn spawn_shell(
     };
 
     let pair = native_pty_system()
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("failed to open pty: {e}"))?;
 
     let mut cmd = CommandBuilder::new(&shell);
@@ -201,7 +214,11 @@ fn spawn_shell(
 
     state.sessions.lock().unwrap().insert(
         id,
-        Session { master: pair.master, writer, child: child_shared.clone() },
+        Session {
+            master: pair.master,
+            writer,
+            child: child_shared.clone(),
+        },
     );
 
     std::thread::spawn(move || {
@@ -211,7 +228,10 @@ fn spawn_shell(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let payload = OutputPayload { id, data: buf[..n].to_vec() };
+                    let payload = OutputPayload {
+                        id,
+                        data: STANDARD.encode(&buf[..n]),
+                    };
                     if window.emit("terminal-output", payload).is_err() {
                         break;
                     }
@@ -286,7 +306,12 @@ fn resize_session(
     if let Some(session) = sessions.get(&id) {
         session
             .master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("failed to resize session {id}: {e}"))?;
     }
     Ok(())
@@ -329,6 +354,14 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Second launch: focus the existing window instead of duplicating.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(SessionManager::default())
         .invoke_handler(tauri::generate_handler![
@@ -351,4 +384,71 @@ pub fn run() {
                 kill_all_sessions(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_config_defaults() {
+        let c = AppConfig::default();
+        assert_eq!(c.shell, None);
+        assert_eq!(c.font_size, 14);
+        assert_eq!(c.font_family, None);
+        assert_eq!(c.theme, "dark");
+        assert!(c.cursor_blink);
+        assert_eq!(c.scrollback, 10000);
+        assert_eq!(c.start_cwd, None);
+    }
+
+    #[test]
+    fn app_config_partial_parse_keeps_defaults() {
+        let c: AppConfig =
+            serde_json::from_str(r#"{"font_size": 18, "theme": "dracula"}"#).unwrap();
+        assert_eq!(c.font_size, 18);
+        assert_eq!(c.theme, "dracula");
+        assert_eq!(c.shell, None); // untouched → default
+        assert_eq!(c.scrollback, 10000);
+    }
+
+    #[test]
+    fn app_config_unknown_fields_ignored() {
+        let c: AppConfig = serde_json::from_str(r#"{"bogus": 1, "font_size": 16}"#).unwrap();
+        assert_eq!(c.font_size, 16);
+        assert_eq!(c.theme, "dark");
+    }
+
+    #[test]
+    fn app_config_roundtrip() {
+        let c = AppConfig {
+            shell: Some("cmd".into()),
+            font_size: 16,
+            font_family: Some("JetBrainsMono NFM".into()),
+            theme: "tokyo-night".into(),
+            cursor_blink: false,
+            scrollback: 5000,
+            start_cwd: Some(r"C:\work".into()),
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        let back: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.shell, c.shell);
+        assert_eq!(back.font_size, c.font_size);
+        assert_eq!(back.font_family, c.font_family);
+        assert_eq!(back.theme, c.theme);
+        assert_eq!(back.cursor_blink, c.cursor_blink);
+        assert_eq!(back.scrollback, c.scrollback);
+        assert_eq!(back.start_cwd, c.start_cwd);
+    }
+
+    #[test]
+    fn output_payload_base64_roundtrip() {
+        let raw = b"hello \xe4\xb8\xad\xe6\x96\x87";
+        let payload = OutputPayload {
+            id: 7,
+            data: STANDARD.encode(raw),
+        };
+        let decoded = STANDARD.decode(&payload.data).unwrap();
+        assert_eq!(&decoded, raw);
+    }
 }

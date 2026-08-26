@@ -209,9 +209,13 @@ onMounted(async () => {
   });
 
   unlisteners.push(
-    await listen<{ id: number; data: number[] }>("terminal-output", (e) => {
+    await listen<{ id: number; data: string }>("terminal-output", (e) => {
       if (e.payload.id !== props.sessionId || !term) return;
-      term.write(new Uint8Array(e.payload.data));
+      // The backend sends base64 (compact vs. JSON number[]).
+      const bin = atob(e.payload.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      term.write(bytes);
     }),
   );
 

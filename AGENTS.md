@@ -21,8 +21,9 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
 
 - `src/App.vue`：标签页管理（新建/关闭/切换 + 窗口标题联动）/ tab management (new/close/switch + window title sync)
 - `src/components/TerminalView.vue`：xterm.js 实例 / xterm.js instance；`defineExpose({ fit })` 供切换标签后重新适配尺寸 / exposes `fit()` for re-fitting after tab switches
-- `src-tauri/src/lib.rs`：`SessionManager`（session id → PTY 会话 / sessions）、读线程转发 `terminal-output` / `terminal-exit` 事件 / reader thread forwards events；命令 / commands `spawn_shell` / `write_session` / `resize_session` / `kill_session`
-- `src-tauri/capabilities/default.json`：权限 / permissions（`core:default` + `core:window:allow-set-title`）
+- `src-tauri/src/lib.rs`：`SessionManager`（session id → PTY 会话 / sessions）、读线程转发 `terminal-output` / `terminal-exit` 事件 / reader thread forwards events；命令 / commands `spawn_shell` / `write_session` / `resize_session` / `kill_session` / `get_config` / `save_config`
+- 插件 / plugins：`single-instance`（单实例，重复启动聚焦已有窗口）、`window-state`（记忆窗口位置大小）、`clipboard-manager`
+- `src-tauri/capabilities/default.json`：权限 / permissions（`core:default` + `core:window:allow-set-title` + `core:window:allow-close` + `clipboard-manager:allow-read-text/write-text`）
 
 ## 关键实现要点（改动前必读）/ Key implementation notes (read before changing code)
 
@@ -34,8 +35,8 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
    `spawn_shell` launches pwsh with `-NoLogo`, `-NoProfileLoadTime`, `-NoExit -Command "$PSStyle.OutputRendering='Ansi'"` and `POWERSHELL_UPDATECHECK=Off`. **Keep `OutputRendering='Ansi'`**: under ConPTY pwsh's `Host` mode strips ANSI from the FIRST prompt (oh-my-posh segments render colorless); forcing `Ansi` restores colors (verified over ConPTY). PS 5.1 gets only `-NoLogo` (no `$PSStyle`, no `-NoProfileLoadTime`). Keep 5.1 compatibility when adding launch args.
 4. **会话生命周期 / Session lifecycle**：每个会话有两个线程——读线程把 PTY 输出转发为 `terminal-output`，EOF 后轮询 `try_wait()` 取退出码再发 `terminal-exit`；**退出监视线程**每 100ms 轮询 `try_wait()`，子进程退出后从会话表移除该 session（drop master 关闭 ConPTY）——**不能只依赖读线程的 EOF**：ConPTY 在客户端退出而 master 仍打开时不会给读端 EOF，读线程会永久阻塞、`terminal-exit` 永远不发。窗口销毁 / 应用退出时 `kill_all_sessions` 清理子进程。
    Each session has two threads: the reader forwards PTY output as `terminal-output` and emits `terminal-exit` (with the exit code polled via `try_wait()`) after EOF; an **exit watcher** polls `try_wait()` every 100ms and removes the session from the map when the child exits, dropping the master to close the ConPTY. Do NOT rely on read-EOF alone: ConPTY does not EOF the reader while the master is open after the client exits, so the reader would block forever and `terminal-exit` would never fire. `kill_all_sessions` cleans up children on window destroy / app exit.
-5. **事件负载 / Event payload**：`terminal-output` 的 `data` 是 `Vec<u8>`，经 JSON 序列化为 number[]，前端用 `new Uint8Array` 还原；改动协议时保持字节透明。
-   `terminal-output.data` is `Vec<u8>`, serialized as a JSON number[] and restored with `new Uint8Array` on the frontend; keep the protocol byte-transparent when changing it.
+5. **事件负载 / Event payload**：`terminal-output.data` 是 **base64 字符串**（后端 `STANDARD.encode`，前端 `atob` → `Uint8Array`）——比 JSON number[] 膨胀小（~1.33x vs ~4x），分块 64KB。改动协议时保持字节透明，前后端需同步。
+   `terminal-output.data` is a **base64 string** (backend `STANDARD.encode`, frontend `atob` → `Uint8Array`) — far more compact than the old JSON number[] (~1.33x vs ~4x blow-up), chunks are 64KB. Keep the protocol byte-transparent and sync frontend/backend when changing it.
 6. **`allowProposedApi: true` 必开**：`LigaturesAddon` 通过 `registerCharacterJoiner`（xterm 标记为 EXPERIMENTAL/proposed API）实现连字。不开此选项时 `loadAddon` 会抛 `You must set the allowProposedApi option to true`，且该异常发生在 `onMounted` 中途 → 后面所有 `listen()` 都不执行 → 终端无输出、输入无回显（症状像后端坏了）。若移除连字插件，此选项可一并去掉。
    `allowProposedApi: true` is required: `LigaturesAddon` uses `registerCharacterJoiner` (marked EXPERIMENTAL/proposed in xterm). Without it `loadAddon` throws mid-`onMounted`, so the `listen()` calls never run → no output, no input echo (looks like a broken backend). Safe to drop the flag if the addon is removed.
 
