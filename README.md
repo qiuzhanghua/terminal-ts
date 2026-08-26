@@ -17,6 +17,9 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 - **配置文件 / Config file**：`config.json` 可覆盖 shell、字体、字号、主题等，首次运行自动生成 / `config.json` overrides shell, font, size, theme, etc.; auto-created on first run
 - **主题 / Themes**：dark、light、solarized-dark、dracula、tokyo-night 或跟随系统深色模式 / preset themes or follow the OS dark/light mode
 - **窗口标题联动 / Window title sync**：shell 通过 OSC 0/2 设置标题时，同步更新窗口标题 / window title follows the shell's OSC 0/2 title
+- **单实例 / Single instance**：重复启动时聚焦已有窗口，不新开 / a second launch focuses the existing window instead of duplicating
+- **窗口状态记忆 / Window state**：记住窗口位置与大小，重启恢复 / window position and size are remembered across restarts
+- **tab 切换保留历史 / Tab history preserved**：切换标签页时终端的命令历史与输出完整保留 / switching tabs keeps each terminal's history intact
 - 进程退出后自动关闭该标签页；若为最后一个标签页则关闭窗口 / auto-closes the tab when the shell exits; closes the window when it was the last tab
 
 ## 配置 / Configuration
@@ -75,6 +78,8 @@ The pwsh version banner, update notice and profile-load-time message are suppres
 | `A new PowerShell stable release is available...`（更新提示 / update notice） | 环境变量 `POWERSHELL_UPDATECHECK=Off` |
 | `Loading personal and system profiles took Xms.`（加载耗时 / load time） | `-NoProfileLoadTime`（仅 pwsh，powershell 5.1 不识别 / pwsh only; PS 5.1 doesn't recognize it） |
 
+另：pwsh 启动参数含 `-NoExit -Command "$PSStyle.OutputRendering='Ansi'"`——ConPTY 下默认 `Host` 模式会剥掉提示符的 ANSI 颜色，强制 `Ansi` 保证 oh-my-posh 段正常着色。/ pwsh is launched with `-NoExit -Command "$PSStyle.OutputRendering='Ansi'"` — under ConPTY the default `Host` mode strips ANSI from the prompt; forcing `Ansi` keeps oh-my-posh segments colored.
+
 ## 运行（开发）/ Run (dev)
 
 ```bash
@@ -92,14 +97,18 @@ npm run tauri build
 
 ```bash
 npm run build                 # 前端：vue-tsc + vite build（产物在 dist/）/ frontend → dist/
+npm test                      # 前端测试：vitest / frontend unit tests
 cd src-tauri && cargo build   # 后端：Rust / backend
+cd src-tauri && cargo test    # 后端测试 / backend unit tests
 cd src-tauri && cargo clippy  # Lint
+cd src-tauri && cargo fmt --check
 ```
 
 ## 技术栈 / Tech stack
 
-- 后端 / Backend：Rust + Tauri 2 + `portable-pty`（会话管理、事件流 / sessions & event streaming）
-- 前端 / Frontend：Vue 3 + TypeScript + xterm.js（`@xterm/xterm` + `@xterm/addon-fit`）
+- 后端 / Backend：Rust + Tauri 2 + `portable-pty`（会话管理、事件流 / sessions & event streaming）+ `tauri-plugin-single-instance` / `window-state` / `clipboard-manager`
+- 前端 / Frontend：Vue 3 + TypeScript + xterm.js 6（`@xterm/xterm` + `@xterm/addon-fit` / `addon-search` / `addon-ligatures`）+ Vite 8（Rolldown）
+- CI：GitHub Actions（`.github/workflows/ci.yml`，前端 build + vitest；后端双平台 fmt/clippy/test）
 
 ## 架构 / Architecture
 
@@ -107,10 +116,11 @@ cd src-tauri && cargo clippy  # Lint
 前端 / Frontend (WebView)
   └─ App.vue: 标签页管理（新建/关闭/切换 + 窗口标题联动）/ tab management + window title sync
       └─ TerminalView.vue: xterm.js 实例 / xterm.js instance
-           │  invoke: spawn_shell / write_session / resize_session / kill_session
+           │  invoke: spawn_shell / write_session / resize_session / kill_session / get_config / save_config
            ▼
 后端 / Backend (Rust)
   ├─ SessionManager: session id → PTY 会话 / session id → PTY session
-  ├─ 读线程 / reader thread: shell 输出 → emit "terminal-output" / "terminal-exit"
-  └─ 命令 / commands: 写入 stdin、调整 PTY 尺寸、结束会话 / write stdin, resize PTY, kill session
+  ├─ 读线程 / reader thread: shell 输出 → emit "terminal-output"(base64) / "terminal-exit"
+  ├─ 退出监听 / exit watcher: 子进程退出 → 关闭 ConPTY → 触发 terminal-exit
+  └─ 插件 / plugins: single-instance、window-state、clipboard-manager
 ```

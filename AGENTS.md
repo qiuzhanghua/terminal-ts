@@ -12,15 +12,17 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
 
 - 运行（开发）/ Run (dev)：`npm run tauri dev`
 - 前端构建 / Frontend build：`npm run build`（`vue-tsc --noEmit && vite build`，产物在 `dist/` / output to `dist/`）
+- 前端测试 / Frontend tests：`npm test`（vitest）
 - 后端构建 / Backend build：`cd src-tauri && cargo build`
-- Lint：`cd src-tauri && cargo clippy`
+- 后端测试 / Backend tests：`cd src-tauri && cargo test`
+- Lint：`cd src-tauri && cargo clippy`；`cargo fmt --check`
 - 打包 / Package：`npm run tauri build`
 - 安装依赖 / Install deps：`npm install`（受限沙箱中若 esbuild postinstall 被拦，可用 `--ignore-scripts` / in a restricted sandbox, use `--ignore-scripts` if esbuild's postinstall is blocked）
 
 ## 架构 / Architecture
 
 - `src/App.vue`：标签页管理（新建/关闭/切换 + 窗口标题联动）/ tab management (new/close/switch + window title sync)
-- `src/components/TerminalView.vue`：xterm.js 实例 / xterm.js instance；`defineExpose({ fit })` 供切换标签后重新适配尺寸 / exposes `fit()` for re-fitting after tab switches
+- `src/components/TerminalView.vue`：xterm.js 实例 / xterm.js instance；`defineExpose({ fit, focus })` 供切换标签后重新适配尺寸/聚焦 / exposes `fit()`/`focus()` for tab switches
 - `src-tauri/src/lib.rs`：`SessionManager`（session id → PTY 会话 / sessions）、读线程转发 `terminal-output` / `terminal-exit` 事件 / reader thread forwards events；命令 / commands `spawn_shell` / `write_session` / `resize_session` / `kill_session` / `get_config` / `save_config`
 - 插件 / plugins：`single-instance`（单实例，重复启动聚焦已有窗口）、`window-state`（记忆窗口位置大小）、`clipboard-manager`
 - `src-tauri/capabilities/default.json`：权限 / permissions（`core:default` + `core:window:allow-set-title` + `core:window:allow-close` + `clipboard-manager:allow-read-text/write-text`）
@@ -39,6 +41,10 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
    `terminal-output.data` is a **base64 string** (backend `STANDARD.encode`, frontend `atob` → `Uint8Array`) — far more compact than the old JSON number[] (~1.33x vs ~4x blow-up), chunks are 64KB. Keep the protocol byte-transparent and sync frontend/backend when changing it.
 6. **`allowProposedApi: true` 必开**：`LigaturesAddon` 通过 `registerCharacterJoiner`（xterm 标记为 EXPERIMENTAL/proposed API）实现连字。不开此选项时 `loadAddon` 会抛 `You must set the allowProposedApi option to true`，且该异常发生在 `onMounted` 中途 → 后面所有 `listen()` 都不执行 → 终端无输出、输入无回显（症状像后端坏了）。若移除连字插件，此选项可一并去掉。
    `allowProposedApi: true` is required: `LigaturesAddon` uses `registerCharacterJoiner` (marked EXPERIMENTAL/proposed in xterm). Without it `loadAddon` throws mid-`onMounted`, so the `listen()` calls never run → no output, no input echo (looks like a broken backend). Safe to drop the flag if the addon is removed.
+7. **tab 切换历史 / Tab-switch history**：`fit()` **必须跳过 0 尺寸（隐藏 v-show）的终端**——对隐藏终端 fit 会把 PTY 缩到 1-2 列，shell 重绘/清屏 → 切回时历史被清空（只剩新提示符）。已在 `fit()` 里加 `clientWidth/clientHeight === 0` 保护；新增尺寸相关逻辑时保持该守卫。
+   `fit()` MUST skip zero-size (hidden v-show) terminals: fitting a hidden terminal resizes the PTY to 1-2 columns, the shell repaints/clears, and switching back shows a wiped buffer. Guard on `clientWidth/clientHeight === 0` is in `fit()`; keep it when touching sizing logic.
+8. **工具链 / Toolchain**：vite 8（Rolldown 打包器）+ `@vitejs/plugin-vue` 6 + `vue-tsc` 3 + **TypeScript 保持 5.x（5.9.3）**——**不要升 TS 7**：原生（Go）编译器与 vue-tsc 3 不兼容（`ERR_PACKAGE_PATH_NOT_EXPORTED`）。升级前端工具链后跑 `npm run build` + `npm test` + `npm run tauri dev` 验证。
+   vite 8 (Rolldown bundler) + `@vitejs/plugin-vue` 6 + `vue-tsc` 3 + **TypeScript stays on 5.x (5.9.3)** — **do NOT bump to TS 7**: the native (Go) compiler breaks vue-tsc 3 (`ERR_PACKAGE_PATH_NOT_EXPORTED`). After toolchain bumps verify `npm run build` + `npm test` + `npm run tauri dev`.
 
 ## 注意事项 / Notes
 
@@ -48,3 +54,5 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
   Rebuild the backend after changing `tauri.conf.json` / capabilities.
 - 事件名与命令名是前后端约定，改动需同步 `TerminalView.vue` 与 `lib.rs`。
   Event and command names are a frontend/backend contract; keep `TerminalView.vue` and `lib.rs` in sync.
+- CI（`.github/workflows/ci.yml`）：前端 build + vitest；后端 ubuntu/windows 双平台 fmt/clippy/test。提交前本地先跑同样的检查。
+  CI (`.github/workflows/ci.yml`): frontend build + vitest; backend fmt/clippy/test on ubuntu & windows. Run the same checks locally before committing.
