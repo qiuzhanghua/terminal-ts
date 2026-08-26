@@ -1,13 +1,25 @@
 /**
  * Terminal font chain.
  *
- * xterm uses the canvas renderer, whose font resolution only honors the FIRST
- * family that WebKit can actually resolve: if the leading family is not
- * installed, canvas falls back to a proportional default and never reaches the
- * rest of the chain. So a static chain that starts with e.g. an uninstalled
- * Nerd Font renders the whole terminal proportionally. We therefore lead with
- * the best NERD/LIGATURE font that is really installed, then keep system
- * monospace (Menlo, guaranteed on macOS) and CJK as plain fallbacks.
+ * xterm uses the canvas renderer. On WebKit the leading family decides the
+ * whole face: if it is not installed, canvas falls back to a proportional
+ * default and never reaches the rest of the chain. On Blink (Windows WebView2)
+ * missing glyphs fall back per-glyph, so later families still contribute
+ * (PUA icons, CJK). Either way the chain MUST start from a font that is really
+ * installed, so we probe availability with a DOM measure against a
+ * deliberately-missing sentinel family (both ending in `monospace`) and lead
+ * with the best font that is present.
+ *
+ * Preference order (best first):
+ *   1. Nerd-patched ligature fonts — one font carrying BOTH the `calt`
+ *      ligature glyphs (`->`, `=>`, `===`) and the oh-my-posh PUA icons.
+ *   2. Plain ligature monospaces (JetBrains Mono / Fira Code / Cascadia Code)
+ *      — ligatures work; on Blink the PUA icons fall back to a Nerd Font later
+ *      in the chain.
+ *   3. Plain Nerd Fonts (MesloLGM Nerd Font Mono, …) — icons guaranteed, but
+ *      no ligatures.
+ *   4. System monospace (Menlo, guaranteed on macOS) as a safe fallback, then
+ *      CJK fonts so Chinese text never lands on the PUA-mapping CJK glyphs.
  *
  * Availability is probed with a DOM measure against a deliberately-missing
  * sentinel family (both ending in `monospace`). An unavailable font falls back
@@ -21,18 +33,20 @@
  *
  * Invariants:
  * - An installed ligature font leads ⇒ `->`, `=>` render as ligatures.
- * - An installed Nerd Font leads ⇒ oh-my-posh PUA icons (U+E0B0–U+E0B6, …)
+ * - A Nerd Font stays in the chain ⇒ oh-my-posh PUA icons (U+E0B0–U+E0B6, …)
  *   resolve there instead of being mapped to CJK ideographs (`瞵間`).
  * - System monospace (Menlo) always remains as a guaranteed monospace fallback.
  */
 
-const NERD_FONTS = [
-  "MesloLGM Nerd Font Mono",
+// Nerd-patched ligature fonts: ligature glyphs AND PUA icons in one font.
+// (FiraCode Nerd Font Mono is the classic example; JetBrainsMono Nerd Font /
+// CaskaydiaCove Nerd Font are the JetBrains Mono / Cascadia Code equivalents.)
+const LIGATURE_NERD_FONTS = [
   "JetBrainsMono Nerd Font Mono",
   "FiraCode Nerd Font Mono",
+  "CaskaydiaCove Nerd Font",
+  "CaskaydiaCove Nerd Font Mono",
   "SauceCodePro Nerd Font Mono",
-  "Hack Nerd Font Mono",
-  "UbuntuMono Nerd Font Mono",
 ];
 
 const LIGATURE_MONOS = [
@@ -40,6 +54,12 @@ const LIGATURE_MONOS = [
   "Fira Code",
   "Cascadia Code",
   "Cascadia Mono",
+];
+
+const NERD_FONTS = [
+  "MesloLGM Nerd Font Mono",
+  "Hack Nerd Font Mono",
+  "UbuntuMono Nerd Font Mono",
 ];
 
 // Always-listed system monospace fallbacks. Menlo first: it is guaranteed on
@@ -93,7 +113,7 @@ function isFontAvailable(family: string): boolean {
 }
 
 export function buildTerminalFontFamily(): string {
-  const detected = [...NERD_FONTS, ...LIGATURE_MONOS].filter(isFontAvailable);
+  const detected = [...LIGATURE_NERD_FONTS, ...LIGATURE_MONOS, ...NERD_FONTS].filter(isFontAvailable);
   const chain = [...detected, ...SYSTEM_MONOS, ...CJK_FONTS, "ui-monospace", "monospace"];
   return chain.map((f) => `"${f}"`).join(", ");
 }

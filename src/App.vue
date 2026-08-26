@@ -7,7 +7,6 @@ import TerminalView from "./components/TerminalView.vue";
 interface Tab {
   id: number;
   title: string;
-  dead: boolean;
 }
 
 const tabs = ref<Tab[]>([]);
@@ -22,7 +21,7 @@ function setViewRef(id: number, el: InstanceType<typeof TerminalView> | null) {
 
 async function addTab(): Promise<void> {
   const id = await invoke<number>("spawn_shell");
-  tabs.value.push({ id, title: "Terminal", dead: false });
+  tabs.value.push({ id, title: "Terminal" });
   await activate(id);
 }
 
@@ -31,7 +30,7 @@ async function activate(id: number): Promise<void> {
   await nextTick();
   viewRefs.value[id]?.fit();
   const tab = tabs.value.find((t) => t.id === id);
-  if (tab && !tab.dead) {
+  if (tab) {
     await appWindow.setTitle(`${tab.title} — Terminal`);
   }
 }
@@ -43,7 +42,11 @@ async function closeTab(id: number): Promise<void> {
   delete viewRefs.value[id];
   invoke("kill_session", { id }).catch(() => {});
   if (tabs.value.length === 0) {
-    await appWindow.close();
+    try {
+      await appWindow.close();
+    } catch (e) {
+      console.error("failed to close window:", e);
+    }
     return;
   }
   if (activeId.value === id) {
@@ -61,8 +64,9 @@ function onTitleChange(id: number, title: string): void {
 }
 
 function onExit(id: number): void {
-  const tab = tabs.value.find((t) => t.id === id);
-  if (tab) tab.dead = true;
+  // The shell in this tab exited (e.g. user typed `exit`): close the tab;
+  // when it was the last tab the whole window closes.
+  closeTab(id);
 }
 
 onMounted(() => {
@@ -77,7 +81,7 @@ onMounted(() => {
         v-for="tab in tabs"
         :key="tab.id"
         class="tab"
-        :class="{ active: tab.id === activeId, dead: tab.dead }"
+        :class="{ active: tab.id === activeId }"
         :title="tab.title"
         @click="activate(tab.id)"
         @auxclick="(e: MouseEvent) => { if (e.button === 1) closeTab(tab.id); }"
@@ -144,10 +148,6 @@ onMounted(() => {
 .tab.active {
   background: var(--tab-active-bg);
   color: var(--fg);
-}
-
-.tab.dead .tab-title::after {
-  content: " ⚠";
 }
 
 .tab-title {

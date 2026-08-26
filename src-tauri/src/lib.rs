@@ -73,7 +73,11 @@ fn kill_all_sessions(app: &AppHandle) {
 /// Spawn a new shell session and return its id. The pty reader runs on a
 /// background thread and forwards output to the frontend as events.
 #[tauri::command]
-fn spawn_shell(window: Window, state: State<'_, SessionManager>) -> Result<u64, String> {
+fn spawn_shell(
+    app: AppHandle,
+    window: Window,
+    state: State<'_, SessionManager>,
+) -> Result<u64, String> {
     let shell = detect_shell();
 
     let pair = native_pty_system()
@@ -114,6 +118,7 @@ fn spawn_shell(window: Window, state: State<'_, SessionManager>) -> Result<u64, 
 
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let child_shared = Arc::new(Mutex::new(child));
+    let child_for_watcher = child_shared.clone();
 
     state.sessions.lock().unwrap().insert(
         id,
@@ -150,6 +155,29 @@ fn spawn_shell(window: Window, state: State<'_, SessionManager>) -> Result<u64, 
         }
         let _ = window.emit("terminal-exit", ExitPayload { id, code });
     });
+
+    // Watch for the child process exiting. Some ConPTY hosts do NOT deliver a
+    // read-EOF when the client exits while the master handle is still open, so
+    // the reader thread above would block forever and `terminal-exit` would
+    // never fire. When the child exits we remove the session, which drops the
+    // master and closes the ConPTY → the reader thread gets EOF and emits the
+    // exit event with the real exit code.
+    {
+        let app_watcher = app.clone();
+        let child_watcher = child_for_watcher;
+        let id_watcher = id;
+        std::thread::spawn(move || {
+            loop {
+                match child_watcher.lock().unwrap().try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                    Err(_) => break,
+                }
+            }
+            let manager = app_watcher.state::<SessionManager>();
+            manager.sessions.lock().unwrap().remove(&id_watcher);
+        });
+    }
 
     Ok(id)
 }
