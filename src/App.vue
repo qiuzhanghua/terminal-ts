@@ -3,6 +3,8 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import TerminalView from "./components/TerminalView.vue";
+import { loadConfig, type AppConfig } from "./lib/config";
+import { resolveTheme, isLightTheme } from "./lib/themes";
 
 interface Tab {
   id: number;
@@ -14,6 +16,11 @@ const activeId = ref<number | null>(null);
 const viewRefs = ref<Record<number, InstanceType<typeof TerminalView> | null>>({});
 
 const appWindow = getCurrentWindow();
+
+// Resolved from config.json on startup (theme preset + followSystem).
+const cfg = ref<AppConfig | null>(null);
+const resolvedTheme = ref<ReturnType<typeof resolveTheme> | null>(null);
+const uiLight = ref(false);
 
 function setViewRef(id: number, el: InstanceType<typeof TerminalView> | null) {
   viewRefs.value[id] = el;
@@ -29,6 +36,7 @@ async function activate(id: number): Promise<void> {
   activeId.value = id;
   await nextTick();
   viewRefs.value[id]?.fit();
+  viewRefs.value[id]?.focus();
   const tab = tabs.value.find((t) => t.id === id);
   if (tab) {
     await appWindow.setTitle(`${tab.title} — Terminal`);
@@ -95,7 +103,18 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // Load user configuration (config.json) and the OS theme preference.
+  try {
+    const { config } = await loadConfig();
+    cfg.value = config;
+    const systemTheme = await appWindow.theme();
+    resolvedTheme.value = resolveTheme(config.theme, systemTheme);
+    uiLight.value = isLightTheme(config.theme, systemTheme);
+  } catch (e) {
+    console.error("failed to load config:", e);
+    resolvedTheme.value = resolveTheme("dark", null);
+  }
   addTab();
   window.addEventListener("keydown", onKeydown, true);
 });
@@ -106,7 +125,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" :data-theme="uiLight ? 'light' : 'dark'">
     <div class="tabbar">
       <div
         v-for="tab in tabs"
@@ -128,6 +147,11 @@ onBeforeUnmount(() => {
         :key="tab.id"
         v-show="tab.id === activeId"
         :session-id="tab.id"
+        :font-size="cfg?.fontSize ?? 14"
+        :font-family="cfg?.fontFamily ?? ''"
+        :theme="resolvedTheme ?? undefined"
+        :cursor-blink="cfg?.cursorBlink ?? true"
+        :scrollback="cfg?.scrollback ?? 10000"
         :ref="(el: any) => setViewRef(tab.id, el)"
         @title-change="(t: string) => onTitleChange(tab.id, t)"
         @exit="() => onExit(tab.id)"
@@ -141,6 +165,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* Light UI chrome when the terminal theme resolves to light. */
+.app[data-theme="light"] {
+  --bg: #ffffff;
+  --tabbar-bg: #f3f3f3;
+  --tab-active-bg: #ffffff;
+  --tab-inactive-bg: #e8e8e8;
+  --border: #d4d4d4;
+  --fg: #333333;
+  --fg-dim: #6a6a6a;
 }
 
 .tabbar {

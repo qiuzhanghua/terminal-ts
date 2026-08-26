@@ -8,9 +8,10 @@
 //! frontend via `terminal-output` / `terminal-exit` events.
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -42,6 +43,72 @@ struct OutputPayload {
 struct ExitPayload {
     id: u64,
     code: Option<u32>,
+}
+
+/// User configuration from `config.json` in the app config dir. All fields
+/// have defaults; `shell` / `font_family` / `start_cwd` are `None` = auto.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+struct AppConfig {
+    /// Override shell detection, e.g. "pwsh", "cmd", "bash".
+    shell: Option<String>,
+    /// Terminal font size in px.
+    font_size: u16,
+    /// Override the runtime-detected font chain, e.g. "JetBrainsMono NFM".
+    font_family: Option<String>,
+    /// Theme preset name, or "followSystem" to follow the OS dark/light mode.
+    theme: String,
+    cursor_blink: bool,
+    scrollback: u32,
+    /// Starting directory for new shells; `None` = user home.
+    start_cwd: Option<String>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            font_size: 14,
+            font_family: None,
+            theme: "dark".to_string(),
+            cursor_blink: true,
+            scrollback: 10000,
+            start_cwd: None,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct ConfigPayload {
+    config: AppConfig,
+    /// Absolute path of the config file (empty if the config dir is unavailable).
+    path: String,
+}
+
+/// `<app config dir>/config.json`, e.g. `%APPDATA%\dev.taiji.terminal-ts`.
+fn config_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join("config.json"))
+}
+
+/// Read the user config; creates a default file on first run.
+fn load_config(app: &AppHandle) -> AppConfig {
+    let Some(path) = config_path(app) else { return AppConfig::default() };
+    match std::fs::read_to_string(&path) {
+        Ok(content) if !content.trim().is_empty() => {
+            serde_json::from_str(&content).unwrap_or_default()
+        }
+        _ => {
+            let defaults = AppConfig::default();
+            if let Some(parent) = path.parent() {
+                if std::fs::create_dir_all(parent).is_ok() {
+                    if let Ok(json) = serde_json::to_string_pretty(&defaults) {
+                        let _ = std::fs::write(&path, json);
+                    }
+                }
+            }
+            defaults
+        }
+    }
 }
 
 /// Same shell detection as the original `terminal` project.
@@ -78,7 +145,12 @@ fn spawn_shell(
     window: Window,
     state: State<'_, SessionManager>,
 ) -> Result<u64, String> {
-    let shell = detect_shell();
+    let config = load_config(&app);
+    // User-configured shell wins; fall back to detection if it's not on PATH.
+    let shell = match &config.shell {
+        Some(s) if which::which(s).is_ok() => s.clone(),
+        _ => detect_shell(),
+    };
 
     let pair = native_pty_system()
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
@@ -102,7 +174,9 @@ fn spawn_shell(
         cmd.arg("-NoLogo");
         cmd.env("POWERSHELL_UPDATECHECK", "Off");
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(cwd) = config.start_cwd.clone() {
+        cmd.cwd(cwd);
+    } else if let Some(home) = dirs::home_dir() {
         cmd.cwd(home);
     }
 
@@ -228,6 +302,30 @@ fn kill_session(state: State<'_, SessionManager>, id: u64) -> Result<(), String>
     Ok(())
 }
 
+/// Return the merged user configuration (defaults + config.json) and the
+/// config file path. Creates a default file on first run.
+#[tauri::command]
+fn get_config(app: AppHandle) -> ConfigPayload {
+    let config = load_config(&app);
+    let path = config_path(&app)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    ConfigPayload { config, path }
+}
+
+/// Persist the user configuration to config.json.
+#[tauri::command]
+fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
+    let Some(path) = config_path(&app) else {
+        return Err("config directory unavailable".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| format!("write config: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -237,7 +335,9 @@ pub fn run() {
             spawn_shell,
             write_session,
             resize_session,
-            kill_session
+            kill_session,
+            get_config,
+            save_config
         ])
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::Destroyed) {

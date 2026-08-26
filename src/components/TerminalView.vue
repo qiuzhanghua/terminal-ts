@@ -3,13 +3,22 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { LigaturesAddon } from "@xterm/addon-ligatures";
 import { SearchAddon } from "@xterm/addon-search";
 import { buildTerminalFontFamily } from "../lib/fonts";
+import { THEME_PRESETS } from "../lib/themes";
 
-const props = defineProps<{ sessionId: number }>();
+const props = defineProps<{
+  sessionId: number;
+  /** Configurable terminal options (from config.json); fall back to defaults. */
+  fontSize?: number;
+  fontFamily?: string;
+  theme?: ITheme;
+  cursorBlink?: boolean;
+  scrollback?: number;
+}>();
 
 const emit = defineEmits<{
   (e: "title-change", title: string): void;
@@ -37,7 +46,11 @@ function fit(): void {
   }
 }
 
-defineExpose({ fit });
+function focus(): void {
+  term?.focus();
+}
+
+defineExpose({ fit, focus });
 
 /* ---------- clipboard ---------- */
 
@@ -78,7 +91,7 @@ function zoomBy(delta: number): void {
 
 function resetZoom(): void {
   if (!term) return;
-  term.options.fontSize = 14;
+  term.options.fontSize = props.fontSize ?? 14;
   fit();
 }
 
@@ -94,6 +107,7 @@ function closeSearch(): void {
   searchVisible.value = false;
   searchTerm.value = "";
   searchAddon?.clearDecorations();
+  term?.focus();
 }
 
 function find(next: boolean): void {
@@ -107,24 +121,19 @@ onMounted(async () => {
 
   term = new Terminal({
     // Leading font is detected at runtime (after document.fonts is ready) so
-    // the canvas renderer — which honors the first resolvable family — always
-    // lands on an installed, monospace font; an installed ligature / Nerd
-    // font is preferred.
-    fontFamily: await buildTerminalFontFamily(),
-    fontSize: 14,
+    // the renderer always lands on an installed, monospace font; an installed
+    // ligature / Nerd font is preferred. config.json can override with
+    // `fontFamily` / `font_size` / `theme` / `cursor_blink` / `scrollback`.
+    fontFamily: props.fontFamily && props.fontFamily.length > 0 ? props.fontFamily : await buildTerminalFontFamily(),
+    fontSize: props.fontSize ?? 14,
     lineHeight: 1.2,
-    cursorBlink: true,
-    scrollback: 10000,
+    cursorBlink: props.cursorBlink ?? true,
+    scrollback: props.scrollback ?? 10000,
     // LigaturesAddon registers a character joiner, which xterm.js marks as
     // (EXPERIMENTAL) and gates behind this flag; without it loadAddon throws
     // and the whole terminal setup (event listeners included) is skipped.
     allowProposedApi: true,
-    theme: {
-      background: "#1e1e1e",
-      foreground: "#d4d4d4",
-      cursor: "#aeafad",
-      selectionBackground: "#264f78",
-    },
+    theme: props.theme ?? THEME_PRESETS.dark,
   });
 
   fitAddon = new FitAddon();
@@ -133,6 +142,8 @@ onMounted(async () => {
   term.loadAddon(searchAddon);
   term.open(host.value);
   fit();
+  // Auto-focus so the user can type immediately (e.g. right after launch).
+  term.focus();
 
   // Ligatures (e.g. -> => for JetBrains Mono / Fira Code). The joiner API is
   // DOM-renderer-only, which is fine: since xterm 6.0.0 the DOM renderer also
@@ -280,8 +291,8 @@ onBeforeUnmount(() => {
   gap: 4px;
   align-items: center;
   padding: 4px;
-  background: #2d2d2d;
-  border: 1px solid #3c3c3c;
+  background: var(--tabbar-bg, #2d2d2d);
+  border: 1px solid var(--border, #3c3c3c);
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
@@ -289,10 +300,10 @@ onBeforeUnmount(() => {
 .search-bar input {
   width: 180px;
   padding: 4px 8px;
-  border: 1px solid #3c3c3c;
+  border: 1px solid var(--border, #3c3c3c);
   border-radius: 4px;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--bg, #1e1e1e);
+  color: var(--fg, #d4d4d4);
   font-size: 12px;
   outline: none;
 }
@@ -304,7 +315,7 @@ onBeforeUnmount(() => {
 .search-bar button {
   border: none;
   background: transparent;
-  color: #cccccc;
+  color: var(--fg, #cccccc);
   font-size: 13px;
   padding: 3px 7px;
   border-radius: 4px;
@@ -312,6 +323,6 @@ onBeforeUnmount(() => {
 }
 
 .search-bar button:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(128, 128, 128, 0.25);
 }
 </style>

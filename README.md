@@ -14,8 +14,31 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 - **复制粘贴 / Copy & paste**：Ctrl+Shift+C 复制选中、Ctrl+Shift+V 粘贴、右键（有选中→复制，无选中→粘贴）/ copy selection (Ctrl+Shift+C), paste (Ctrl+Shift+V), right-click (copy if selection, else paste)
 - **终端内搜索 / In-terminal search**：Ctrl+Shift+F，Enter/Shift+Enter 下一个/上一个，Esc 关闭 / open with Ctrl+Shift+F; Enter / Shift+Enter for next / previous; Esc closes
 - **字体缩放 / Font zoom**：Ctrl+= / Ctrl+- 缩放、Ctrl+0 复位 / zoom with Ctrl+= / Ctrl+-, reset with Ctrl+0
+- **配置文件 / Config file**：`config.json` 可覆盖 shell、字体、字号、主题等，首次运行自动生成 / `config.json` overrides shell, font, size, theme, etc.; auto-created on first run
+- **主题 / Themes**：dark、light、solarized-dark、dracula、tokyo-night 或跟随系统深色模式 / preset themes or follow the OS dark/light mode
 - **窗口标题联动 / Window title sync**：shell 通过 OSC 0/2 设置标题时，同步更新窗口标题 / window title follows the shell's OSC 0/2 title
 - 进程退出后自动关闭该标签页；若为最后一个标签页则关闭窗口 / auto-closes the tab when the shell exits; closes the window when it was the last tab
+
+## 配置 / Configuration
+
+配置文件位于应用配置目录，首次运行自动生成（默认值可直接改）：
+
+- **Windows**: `%APPDATA%\dev.taiji.terminal-ts\config.json`
+- **macOS**: `~/Library/Application Support/dev.taiji.terminal-ts/config.json`
+- **Linux**: `~/.config/dev.taiji.terminal-ts/config.json`
+
+| 字段 / Field | 类型 | 说明 / Meaning |
+|---|---|---|
+| `shell` | string \| null | 覆盖 shell 检测（如 `"pwsh"`、`"cmd"`、`"bash"`）；null = 自动检测 |
+| `font_size` | number | 字号（默认 14） |
+| `font_family` | string \| null | 覆盖运行时字体探测（如 `"JetBrainsMono NFM"`）；null = 自动 |
+| `theme` | string | `dark` / `light` / `solarized-dark` / `dracula` / `tokyo-night` / `followSystem` |
+| `cursor_blink` | boolean | 光标闪烁（默认 true） |
+| `scrollback` | number | 回滚行数（默认 10000） |
+| `start_cwd` | string \| null | 新 shell 的起始目录；null = 用户主目录 |
+
+修改后重启应用生效。示例：使用 Tokyo Night 主题 + 16px 字号：
+`"theme": "tokyo-night", "font_size": 16`
 
 ## 中文 / 图标显示 · Chinese / icon rendering
 
