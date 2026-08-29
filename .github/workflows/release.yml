@@ -1,0 +1,109 @@
+name: Release
+
+# 打包并发布安装包。
+# - push tag v*（如 `git tag v0.1.0`）→ 构建 4 平台安装包并创建 Draft Release
+#   （tauri-action 自动上传产物；草稿经人工确认后再发布，避免误发）
+# - workflow_dispatch（Actions 页手动运行）→ 只构建，产物以 artifact 保存供下载
+#
+# Build & publish installers:
+# - push tag v* (e.g. `git tag v0.1.0`) → build installers for 4 platforms and
+#   create a Draft Release (tauri-action uploads the assets; publish manually)
+# - workflow_dispatch (manual run) → build only, bundles kept as artifacts
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Creating a GitHub Release requires write access.
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest' # Apple Silicon
+            name: macos-arm64
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest' # Intel（在 arm runner 上交叉编译 / cross-compiled on the arm runner）
+            name: macos-x86_64
+            args: '--target x86_64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            name: linux-x86_64
+            args: ''
+          # ubuntu-22.04-arm 仅对 public 仓库可用；private 仓库需自托管 runner。
+          # ubuntu-22.04-arm is only available for public repos; private repos need a self-hosted runner.
+          - platform: 'windows-latest'
+            name: windows-x86_64
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ubuntu（Linux）需要 webkit2gtk 等系统依赖 / Linux needs webkit2gtk & friends.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 两个 macOS 目标只在 mac runner 上需要 / macOS targets are only needed on the mac runner.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS 签名/公证（可选）：配置这些 secrets 后自动签名+公证；未配置则跳过签名。
+          # macOS signing/notarization (optional): set these secrets to sign &
+          # notarize; when unset the build is unsigned.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          # tag 触发 → 创建 Draft Release；手动触发 → 不发布（tagName 为空时只构建）。
+          # tag push → create a Draft Release; manual run → build only (empty tagName).
+          tagName: ${{ github.event_name == 'push' && 'v__VERSION__' || '' }}
+          releaseName: ${{ github.event_name == 'push' && 'v__VERSION__' || '' }}
+          releaseBody: ${{ github.event_name == 'push' && '自动构建的安装包，请下载对应平台的产物。' || '' }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # 手动触发时把产物上传为 artifact，方便直接下载。
+      # Manual runs keep the bundles as downloadable artifacts.
+      - name: Upload bundles (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.name }}
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.rpm
+          if-no-files-found: warn
