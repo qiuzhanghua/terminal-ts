@@ -1,6 +1,6 @@
 [package]
 name = "terminal"
-version = "1.0.0"
+version = "1.0.1"
 description = "A Tauri terminal emulator"
 authors = ["邱张华"]
 license = "MIT"
