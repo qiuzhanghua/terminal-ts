@@ -20,6 +20,8 @@
  *      no ligatures.
  *   4. System monospace (Menlo, guaranteed on macOS) as a safe fallback, then
  *      CJK fonts so Chinese text never lands on the PUA-mapping CJK glyphs.
+ *      Sarasa Mono/Term SC leads the CJK group: its CJK glyphs are exactly
+ *      2× the Latin advance, so Chinese stays on the terminal grid.
  *
  * Availability is probed with a DOM measure against a deliberately-missing
  * sentinel family (both ending in `monospace`). An unavailable font falls back
@@ -59,7 +61,6 @@ const LIGATURE_MONOS = [
   "JetBrains Mono",
   "Fira Code",
   "Cascadia Code",
-  "Cascadia Mono",
 ];
 
 const NERD_FONTS = [
@@ -85,14 +86,26 @@ const SYSTEM_MONOS = [
   "Ubuntu Mono",
 ];
 
+// Sarasa (更纱黑体 = Iosevka 西文 + 思源黑体中文) is the preferred CJK
+// candidate for terminals: its Mono/Term variants force CJK glyphs to exactly
+// 2× the Latin advance, keeping the whole line on a uniform grid. It has a few
+// powerline PUA glyphs (U+E0B0–U+E0B6) but NOT the full Nerd set (U+EA83,
+// U+F00C …), so it must stay after the Nerd fonts — icons resolve to the Nerd
+// font first, CJK falls back to Sarasa before the system CJK fonts.
+// WenQuanYi Zen Hei / Droid Sans Fallback are last-resort entries for Kylin
+// (麒麟) and older Linux/Android systems; harmless when absent (CSS skips
+// unavailable families and moves on).
 const CJK_FONTS = [
+  "Sarasa Mono SC",
+  "Sarasa Term SC",
   "PingFang SC",
   "Hiragino Sans GB",
   "Noto Sans CJK SC",
-  "Noto Sans SC",
   "Microsoft YaHei",
   "WenQuanYi Micro Hei",
+  "WenQuanYi Zen Hei",
   "SimHei",
+  "Droid Sans Fallback",
 ];
 
 const MISSING = "__missing_font_sentinel_123__";

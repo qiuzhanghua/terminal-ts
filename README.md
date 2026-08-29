@@ -51,12 +51,13 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 ① 带连字的 Nerd Font（JetBrainsMono/FiraCode/CaskaydiaCove Nerd Font，连字 + 图标一个字体搞定）
 → ② 纯连字等宽（JetBrains Mono / Fira Code / Cascadia Code，连字生效，图标回退到后面的 Nerd Font）
 → ③ 纯 Nerd Font（MesloLGM 等，图标保证、无连字）
-→ ④ 系统等宽（Menlo）→ CJK → monospace
+→ ④ 系统等宽（Menlo）→ CJK（Sarasa Mono SC 优先，中文等宽）→ monospace
 ```
 
 - **连字字体优先**：只有让 JetBrains Mono / Fira Code / Cascadia 等带 `calt` 连字字形的字体排在链首，`->`、`=>`、`===` 才会渲染成连字；且探测阈值必须低（0.1）——JetBrains Mono 与 Menlo 的字宽差仅 ~0.4px，0.5 会漏判成"不可用"。**不要用 `serif`/`sans`/单独的 `monospace` 作探测基准**：未知字体会落回默认字体而非该泛型（`serif` 会误判），而 `monospace` 在 macOS 就是 Menlo 会互相抵消。
 - **Nerd Font 必须放在中文字体之前**：oh-my-posh 等提示符使用 Nerd Font / powerline 私有区图标（U+E0B0–U+E0B6、U+EA83、U+F00C 等）。中文字体（微软雅黑/宋体/PingFang）会把私有区码位错误映射成汉字字形，导致显示为 `瞵間` 类乱码；Nerd Font 优先可保证图标正确渲染。
   **Nerd Font must come before CJK fonts**: prompts like oh-my-posh use private-use-area (PUA) glyphs from Nerd Font / powerline (U+E0B0–U+E0B6, U+EA83, U+F00C, …). CJK fonts (Microsoft YaHei/SimSun/PingFang) mis-map those PUA codepoints to CJK ideographs, producing mojibake like `瞵間`; putting the Nerd Font first renders the icons correctly.
+- **CJK 等宽优先用更纱黑体（Sarasa Mono SC / Sarasa Term SC）**：Sarasa 的西文来自 Iosevka、中文来自思源黑体，Mono/Term 变体把 CJK 字形调整到恰好 2 倍西文宽度，中文在终端里保持等宽网格。其 PUA 图标只有部分 powerline 箭头（无完整 Nerd 集），因此排在 Nerd Font 之后——图标仍由 Nerd Font 渲染，中文回退到 Sarasa。字体链已内置，安装后自动生效；未安装时自动回退到系统 CJK 字体（PingFang SC / 微软雅黑），Linux 尾部兜底文泉驿正黑（WenQuanYi Zen Hei）与 Droid Sans Fallback（麒麟/老系统预装）。
 - **macOS 下安装 Nerd Font**（Homebrew 已合并 cask-fonts 仓库，直接安装即可）/ Install a Nerd Font on macOS:
   ```bash
   brew install --cask font-meslo-lg-nerd-font      # 推荐 / recommended（与 Windows 一致）
