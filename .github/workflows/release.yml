@@ -73,15 +73,15 @@ jobs:
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS 签名/公证（可选）：配置这些 secrets 后自动签名+公证；未配置则跳过签名。
-          # macOS signing/notarization (optional): set these secrets to sign &
-          # notarize; when unset the build is unsigned.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # 签名已禁用：未配置 APPLE_* secrets，macOS 产物为未签名 dmg
+          # （安装时 Gatekeeper 提示，右键打开即可）。如需签名+公证，按
+          # https://tauri.app/distribute/sign/macos/ 配置以下 secrets：
+          # APPLE_CERTIFICATE（`openssl base64 -A` 单行 p12）、
+          # APPLE_CERTIFICATE_PASSWORD、APPLE_SIGNING_IDENTITY、
+          # APPLE_ID、APPLE_PASSWORD、APPLE_TEAM_ID。
+          # Signing disabled: no APPLE_* secrets set, macOS bundles are
+          # unsigned .dmg (right-click → Open to bypass Gatekeeper). To
+          # sign & notarize, configure the secrets above per the Tauri docs.
         with:
           # tag 触发 → 创建 Draft Release；手动触发 → 不发布（tagName 为空时只构建）。
           # tag push → create a Draft Release; manual run → build only (empty tagName).
