@@ -172,6 +172,12 @@ fn spawn_shell(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // portable-pty rebuilds the environment from the Windows registry, which
+    // drops session-injected PATH entries (e.g. `cot\bin` added by `c`).
+    // Re-apply the parent process's full PATH so the shell sees it too.
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
     // Suppress pwsh startup noise: version banner, update notice and
     // profile-load-time message. Also force $PSStyle.OutputRendering='Ansi':
     // under ConPTY pwsh's first prompt is otherwise rendered without colors

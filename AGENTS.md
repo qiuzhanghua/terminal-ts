@@ -45,6 +45,8 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
    `fit()` MUST skip zero-size (hidden v-show) terminals: fitting a hidden terminal resizes the PTY to 1-2 columns, the shell repaints/clears, and switching back shows a wiped buffer. Guard on `clientWidth/clientHeight === 0` is in `fit()`; keep it when touching sizing logic.
 8. **工具链 / Toolchain**：vite 8（Rolldown 打包器）+ `@vitejs/plugin-vue` 6 + `vue-tsc` 3 + **TypeScript 保持 5.x（5.9.3）**——**不要升 TS 7**：原生（Go）编译器与 vue-tsc 3 不兼容（`ERR_PACKAGE_PATH_NOT_EXPORTED`）。升级前端工具链后跑 `npm run build` + `npm test` + `npm run tauri dev` 验证。
    vite 8 (Rolldown bundler) + `@vitejs/plugin-vue` 6 + `vue-tsc` 3 + **TypeScript stays on 5.x (5.9.3)** — **do NOT bump to TS 7**: the native (Go) compiler breaks vue-tsc 3 (`ERR_PACKAGE_PATH_NOT_EXPORTED`). After toolchain bumps verify `npm run build` + `npm test` + `npm run tauri dev`.
+9. **PATH 继承 / PATH inheritance**：portable-pty 0.8 的 `CommandBuilder` 在 Windows 上会**从注册表重建环境**（`get_base_env`）——`HKLM` 的 PATH 会覆盖父进程 PATH，导致**会话级注入的 PATH 项丢失**（如 `c` 注入的 `cot\bin`、DSH 环境等）。`spawn_shell` 里必须把父进程 PATH 显式传回：`if let Ok(path) = std::env::var("PATH") { cmd.env("PATH", path); }`。**不要删掉这行**。
+   portable-pty 0.8's `CommandBuilder` rebuilds the environment from the Windows registry on Windows (`get_base_env`): the HKLM PATH **overrides** the parent PATH, dropping session-injected entries (e.g. `cot\bin` from `c`, DSH env). `spawn_shell` must re-apply the parent PATH explicitly: `if let Ok(path) = std::env::var("PATH") { cmd.env("PATH", path); }`. **Do not remove this line**.
 
 ## 注意事项 / Notes
 

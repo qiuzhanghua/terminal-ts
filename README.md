@@ -26,9 +26,9 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 
 配置文件位于应用配置目录，首次运行自动生成（默认值可直接改）：
 
-- **Windows**: `%APPDATA%\dev.taiji.terminal-ts\config.json`
-- **macOS**: `~/Library/Application Support/dev.taiji.terminal-ts/config.json`
-- **Linux**: `~/.config/dev.taiji.terminal-ts/config.json`
+- **Windows**: `%APPDATA%\dev.taiji.terminal\config.json`
+- **macOS**: `~/Library/Application Support/dev.taiji.terminal/config.json`
+- **Linux**: `~/.config/dev.taiji.terminal/config.json`
 
 | 字段 / Field | 类型 | 说明 / Meaning |
 |---|---|---|
