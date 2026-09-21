@@ -6,6 +6,9 @@ node_modules
 dist
 dist-ssr
 
+# Release bundles produced by .github/workflows/release.yml
+release-assets
+
 # Local npm cache (used when the system cache is unavailable)
 .npm-cache
 
