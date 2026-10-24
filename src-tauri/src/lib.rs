@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
 /// Max bytes read from the pty per `terminal-output` event. Output is
@@ -173,6 +174,45 @@ fn detect_shell() -> String {
     }
 }
 
+/// Current working directory of the process `pid`, or `None` when it cannot be
+/// read (process already gone, or the OS does not expose it for that process).
+///
+/// `sysinfo` is used because there is no portable std API for another process's
+/// cwd: Linux reads `/proc/<pid>/cwd`, macOS asks `proc_pidinfo`, Windows reads
+/// the PEB via `NtQueryInformationProcess`.
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    // `refresh_processes(..)` would not work here: it only refreshes processes
+    // already known to the (empty) `System`, so a fresh instance reports no cwd.
+    // Ask for this one pid explicitly, and only for its cwd — a full refresh
+    // would walk every process on the machine on each new tab.
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    system
+        .process(pid)
+        .and_then(|process| process.cwd())
+        .map(Path::to_path_buf)
+}
+
+/// Pick the directory a fresh shell should start in.
+///
+/// Priority: `requested` (a new tab inheriting the active tab's cwd) beats
+/// `configured` (`config.json`'s `start_cwd`), and both fall back to the user's
+/// home directory. Entries that no longer exist are skipped, so a stale cwd
+/// (directory deleted while the old tab sat in it) cannot be handed to
+/// `spawn_command`, which would fail to start the shell at all.
+fn resolve_start_cwd(requested: Option<&str>, configured: Option<&str>) -> Option<PathBuf> {
+    requested
+        .into_iter()
+        .chain(configured)
+        .map(PathBuf::from)
+        .find(|path| path.is_dir())
+        .or_else(dirs::home_dir)
+}
+
 /// Kill every session. Called from the window `Destroyed` handler, i.e. on the
 /// GTK main thread, so it must never block: blocking there freezes the whole
 /// UI (the close button appears dead).
@@ -193,11 +233,16 @@ fn kill_all_sessions(app: &AppHandle) {
 
 /// Spawn a new shell session and return its id. The pty reader runs on a
 /// background thread and forwards output to the frontend as events.
+///
+/// `cwd` is the directory the shell should start in; the frontend passes the
+/// active tab's cwd so a new tab opens where the old one was. `None` falls back
+/// to `config.json`'s `start_cwd`, then to the home directory.
 #[tauri::command]
 fn spawn_shell(
     app: AppHandle,
     window: Window,
     state: State<'_, SessionManager>,
+    cwd: Option<String>,
 ) -> Result<u64, String> {
     let config = load_config(&app);
     // User-configured shell wins; fall back to detection if it's not on PATH.
@@ -239,11 +284,10 @@ fn spawn_shell(
         cmd.arg("-NoLogo");
         cmd.env("POWERSHELL_UPDATECHECK", "Off");
     }
-    // cwd priority: config.start_cwd > home dir.
-    if let Some(cwd) = config.start_cwd.clone().filter(|c| Path::new(c).is_dir()) {
-        cmd.cwd(cwd);
-    } else if let Some(home) = dirs::home_dir() {
-        cmd.cwd(home);
+    // cwd priority: caller request (new tab inheriting the active tab) >
+    // config.start_cwd > home dir.
+    if let Some(start_cwd) = resolve_start_cwd(cwd.as_deref(), config.start_cwd.as_deref()) {
+        cmd.cwd(start_cwd);
     }
 
     let child = pair
@@ -388,6 +432,27 @@ fn attach_session(window: Window, state: State<'_, SessionManager>, id: u64) -> 
     Ok(())
 }
 
+/// Current working directory of a session's shell.
+///
+/// Used to make a new tab open in the same directory as the tab that was active
+/// when it was created. Returns `None` — rather than an error — when the cwd is
+/// unreadable, so the frontend simply falls back to the default start dir.
+#[tauri::command]
+fn session_cwd(state: State<'_, SessionManager>, id: u64) -> Option<String> {
+    // Same rule as the other session commands: take what is needed under the
+    // map lock, release it, then do the work. The sysinfo lookup touches the
+    // OS and must not run with the session map held.
+    let child = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions.get(&id).map(|session| session.child.clone())
+    }?;
+    let pid = {
+        let child = child.lock().unwrap();
+        child.process_id()
+    }?;
+    process_cwd(pid).map(|path| path.display().to_string())
+}
+
 /// Write keystrokes from the frontend into the session's pty.
 #[tauri::command]
 fn write_session(state: State<'_, SessionManager>, id: u64, data: Vec<u8>) -> Result<(), String> {
@@ -483,6 +548,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             spawn_shell,
             attach_session,
+            session_cwd,
             write_session,
             resize_session,
             kill_session,
@@ -567,5 +633,64 @@ mod tests {
         };
         let decoded = STANDARD.decode(&payload.data).unwrap();
         assert_eq!(&decoded, raw);
+    }
+
+    /* ---------- cwd inheritance ---------- */
+
+    /// Unique scratch directory for a test, created and removed by the caller.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("terminal-cwd-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_start_cwd_prefers_requested() {
+        let requested = temp_dir("requested");
+        let configured = temp_dir("configured");
+        let picked = resolve_start_cwd(
+            Some(requested.to_str().unwrap()),
+            Some(configured.to_str().unwrap()),
+        );
+        assert_eq!(picked.as_deref(), Some(requested.as_path()));
+        std::fs::remove_dir_all(&requested).ok();
+        std::fs::remove_dir_all(&configured).ok();
+    }
+
+    #[test]
+    fn resolve_start_cwd_falls_back_when_requested_is_gone() {
+        // A tab may sit in a directory that was deleted meanwhile; handing that
+        // path to `spawn_command` would make the shell fail to start.
+        let configured = temp_dir("fallback");
+        let missing = configured.join("does-not-exist");
+        let picked = resolve_start_cwd(
+            Some(missing.to_str().unwrap()),
+            Some(configured.to_str().unwrap()),
+        );
+        assert_eq!(picked.as_deref(), Some(configured.as_path()));
+        std::fs::remove_dir_all(&configured).ok();
+    }
+
+    #[test]
+    fn resolve_start_cwd_uses_home_when_nothing_usable() {
+        let picked = resolve_start_cwd(Some("/nonexistent-terminal-dir"), None);
+        assert_eq!(picked, dirs::home_dir());
+    }
+
+    #[test]
+    fn process_cwd_reads_own_working_directory() {
+        // Round-trips the platform introspection (proc_pidinfo / PEB / /proc)
+        // that `session_cwd` relies on: the pid of this very process must
+        // report the directory the test is running in.
+        let expected = std::env::current_dir().unwrap();
+        let actual = process_cwd(std::process::id());
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[test]
+    fn process_cwd_of_missing_process_is_none() {
+        // Pid 0 is never a normal user process; the lookup must degrade to
+        // `None` instead of panicking so `session_cwd` can fall back.
+        assert_eq!(process_cwd(0), None);
     }
 }

@@ -29,3 +29,8 @@ serde_json = "1"
 portable-pty = "0.8"
 which = "8"
 dirs = "6"
+# Current working directory of another process, needed so a new tab can inherit
+# the active tab's cwd. Only the process-inspection half is used: the default
+# feature set would also pull in disks / networks / users / components and
+# rayon, none of which this app touches.
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }

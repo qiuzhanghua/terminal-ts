@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import TerminalView from "./components/TerminalView.vue";
 import { loadConfig, type AppConfig } from "./lib/config";
 import { resolveTheme, isLightTheme } from "./lib/themes";
+import { sessionCwd, spawnShell } from "./lib/session";
 
 interface Tab {
   id: number;
@@ -27,7 +28,11 @@ function setViewRef(id: number, el: InstanceType<typeof TerminalView> | null) {
 }
 
 async function addTab(): Promise<void> {
-  const id = await invoke<number>("spawn_shell");
+  // Read the active tab's directory *before* spawning: by the time the new tab
+  // is activated `activeId` already points at it, so asking afterwards would
+  // report the new shell's own cwd and inherit nothing.
+  const cwd = await sessionCwd(activeId.value);
+  const id = await spawnShell(cwd);
   tabs.value.push({ id, title: "Terminal" });
   await activate(id);
 }
