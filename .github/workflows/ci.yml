@@ -26,12 +26,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # The Rust crate lives in src-tauri/, and there is no Cargo.toml at the repo
+    # root — without this every cargo command below dies with
+    # "could not find `Cargo.toml`" instead of actually checking the code.
+    defaults:
+      run:
+        working-directory: src-tauri
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache only auto-detects a workspace at the repo root; point it
+          # at the crate so the cache key and target dir are correct.
+          workspaces: "src-tauri -> target"
       - name: Format
         run: cargo fmt --check
       - name: Clippy
