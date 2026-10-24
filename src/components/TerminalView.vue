@@ -234,6 +234,16 @@ onMounted(async () => {
     }),
   );
 
+  // Both listeners are live from here on: ask the backend for whatever the
+  // shell printed before we were listening (its first prompt). Without this
+  // the startup banner is lost and the terminal looks empty until the next
+  // keypress makes the shell redraw.
+  try {
+    await invoke("attach_session", { id: props.sessionId });
+  } catch (e) {
+    console.error("attach_session failed:", e);
+  }
+
   // Windows terminal convention: right-click copies the selection if there is
   // one, otherwise pastes the clipboard.
   host.value.addEventListener("contextmenu", (e) => {

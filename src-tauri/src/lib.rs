@@ -25,8 +25,44 @@ const READ_CHUNK: usize = 65536;
 /// A live shell session backed by a PTY.
 struct Session {
     master: Box<dyn portable_pty::MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// `Arc` so `write_session` can drop the session-map lock before touching
+    /// the pty: `write_all` blocks once the pty buffer fills, and holding the
+    /// map lock across that would stall every other session operation.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    /// Output produced before the frontend attached its listeners.
+    buf: Arc<Mutex<SessionBuffer>>,
+}
+
+/// Startup output has to survive until the webview is listening.
+///
+/// `spawn_shell` returns as soon as the pty is running, but the frontend only
+/// registers `terminal-output` at the end of `TerminalView`'s async mount —
+/// by then the shell has already printed its prompt. Emitting into that gap
+/// dropped the prompt, so the user saw an empty terminal until pressing Enter
+/// made the shell redraw. Everything is buffered here until `attach_session`.
+#[derive(Default)]
+struct SessionBuffer {
+    attached: bool,
+    /// Raw bytes, not base64: each chunk is base64-encoded on its own, so
+    /// concatenating encoded chunks would interleave `=` padding and produce
+    /// a payload `atob` rejects.
+    pending: Vec<u8>,
+}
+
+/// Upper bound for the pre-attach buffer. A healthy startup flushes this
+/// within a second; the cap only matters if the frontend never attaches, in
+/// which case the oldest output is dropped to keep memory bounded.
+const MAX_PENDING: usize = 1 << 20;
+
+impl SessionBuffer {
+    fn push(&mut self, bytes: &[u8]) {
+        if self.pending.len() + bytes.len() > MAX_PENDING {
+            let cut = self.pending.len().saturating_sub(MAX_PENDING / 2);
+            self.pending.drain(..cut);
+        }
+        self.pending.extend_from_slice(bytes);
+    }
 }
 
 #[derive(Default)]
@@ -137,10 +173,20 @@ fn detect_shell() -> String {
     }
 }
 
+/// Kill every session. Called from the window `Destroyed` handler, i.e. on the
+/// GTK main thread, so it must never block: blocking there freezes the whole
+/// UI (the close button appears dead).
+///
+/// The map lock is released before any child is touched. Nesting it with the
+/// per-session child lock deadlocks against the exit watcher, which polls that
+/// same child under its own lock.
 fn kill_all_sessions(app: &AppHandle) {
-    let state = app.state::<SessionManager>();
-    let sessions = state.sessions.lock().unwrap();
-    for session in sessions.values() {
+    let drained: Vec<Session> = {
+        let state = app.state::<SessionManager>();
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.drain().map(|(_, session)| session).collect()
+    };
+    for session in drained {
         let _ = session.child.lock().unwrap().kill();
     }
 }
@@ -218,29 +264,44 @@ fn spawn_shell(
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let child_shared = Arc::new(Mutex::new(child));
     let child_for_watcher = child_shared.clone();
+    let buf = Arc::new(Mutex::new(SessionBuffer::default()));
+    let buf_for_reader = buf.clone();
 
     state.sessions.lock().unwrap().insert(
         id,
         Session {
             master: pair.master,
-            writer,
+            writer: Arc::new(Mutex::new(writer)),
             child: child_shared.clone(),
+            buf,
         },
     );
 
     std::thread::spawn(move || {
         let mut reader = reader;
-        let mut buf = [0u8; READ_CHUNK];
+        let mut raw = [0u8; READ_CHUNK];
         loop {
-            match reader.read(&mut buf) {
+            match reader.read(&mut raw) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let payload = OutputPayload {
-                        id,
-                        data: STANDARD.encode(&buf[..n]),
-                    };
-                    if window.emit("terminal-output", payload).is_err() {
-                        break;
+                    // Decide under the buffer lock whether this chunk can go
+                    // out now or has to wait for `attach_session`, and hold
+                    // that lock across the emit so the buffered prefix is
+                    // never overtaken by live output.
+                    let mut live: Option<String> = None;
+                    {
+                        let mut b = buf_for_reader.lock().unwrap();
+                        if b.attached {
+                            live = Some(STANDARD.encode(&raw[..n]));
+                        } else {
+                            b.push(&raw[..n]);
+                        }
+                    }
+                    if let Some(data) = live {
+                        let payload = OutputPayload { id, data };
+                        if window.emit("terminal-output", payload).is_err() {
+                            break;
+                        }
                     }
                 }
                 Err(_) => break,
@@ -248,9 +309,13 @@ fn spawn_shell(
         }
 
         // The pty closed: poll for the real exit code without blocking forever.
+        // The guard is bound to a local so it is released before sleeping —
+        // holding it across `sleep` (as a `match` temporary would) starves
+        // every other thread that needs the child lock.
         let mut code: Option<u32> = None;
         for _ in 0..200 {
-            match child_shared.lock().unwrap().try_wait() {
+            let waited = { child_shared.lock().unwrap().try_wait() };
+            match waited {
                 Ok(Some(status)) => {
                     code = Some(status.exit_code());
                     break;
@@ -274,7 +339,9 @@ fn spawn_shell(
         let id_watcher = id;
         std::thread::spawn(move || {
             loop {
-                match child_watcher.lock().unwrap().try_wait() {
+                // Same rule as above: never hold the child lock while sleeping.
+                let waited = { child_watcher.lock().unwrap().try_wait() };
+                match waited {
                     Ok(Some(_)) => break,
                     Ok(None) => std::thread::sleep(Duration::from_millis(100)),
                     Err(_) => break,
@@ -288,17 +355,58 @@ fn spawn_shell(
     Ok(id)
 }
 
+/// Hand the frontend everything the shell printed before it was listening.
+///
+/// The listener must already be registered when this is called: the buffered
+/// bytes are emitted as a normal `terminal-output` event so they stay in the
+/// same ordered channel as the live output that follows.
+#[tauri::command]
+fn attach_session(window: Window, state: State<'_, SessionManager>, id: u64) -> Result<(), String> {
+    let buf = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions.get(&id).map(|session| session.buf.clone())
+    };
+    let Some(buf) = buf else {
+        return Err(format!("no such session {id}"));
+    };
+
+    // Hold the buffer lock across the emit: the reader thread cannot slip a
+    // live chunk in between, so order is preserved.
+    let mut b = buf.lock().unwrap();
+    b.attached = true;
+    let pending = std::mem::take(&mut b.pending);
+    // Encode once, after the chunks have been reassembled into one byte run.
+    if !pending.is_empty() {
+        let _ = window.emit(
+            "terminal-output",
+            OutputPayload {
+                id,
+                data: STANDARD.encode(&pending),
+            },
+        );
+    }
+    Ok(())
+}
+
 /// Write keystrokes from the frontend into the session's pty.
 #[tauri::command]
 fn write_session(state: State<'_, SessionManager>, id: u64, data: Vec<u8>) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().unwrap();
-    if let Some(session) = sessions.get_mut(&id) {
-        session
-            .writer
-            .write_all(&data)
-            .map_err(|e| format!("failed to write to session {id}: {e}"))?;
-    }
-    Ok(())
+    // Clone the writer out and drop the map lock first: `write_all` blocks
+    // when the pty buffer is full (shell busy / not reading), and holding the
+    // map lock there would freeze every other session op — including the
+    // close path.
+    let writer = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions.get(&id).map(|session| session.writer.clone())
+    };
+    let Some(writer) = writer else {
+        // Session already gone (shell exited): dropping keystrokes is fine.
+        return Ok(());
+    };
+    let mut writer = writer.lock().unwrap();
+    writer
+        .write_all(&data)
+        .map_err(|e| format!("failed to write to session {id}: {e}"))
 }
 
 /// Resize the pty to match the frontend's xterm size.
@@ -327,8 +435,9 @@ fn resize_session(
 /// Kill a session (closing the tab) and release its pty.
 #[tauri::command]
 fn kill_session(state: State<'_, SessionManager>, id: u64) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().unwrap();
-    if let Some(session) = sessions.remove(&id) {
+    // Remove under the lock, kill outside it — see `kill_all_sessions`.
+    let removed = { state.sessions.lock().unwrap().remove(&id) };
+    if let Some(session) = removed {
         let _ = session.child.lock().unwrap().kill();
     }
     Ok(())
@@ -373,6 +482,7 @@ pub fn run() {
         .manage(SessionManager::default())
         .invoke_handler(tauri::generate_handler![
             spawn_shell,
+            attach_session,
             write_session,
             resize_session,
             kill_session,
