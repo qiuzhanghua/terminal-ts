@@ -94,6 +94,36 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### Linux 系统依赖 / Linux system dependencies
+
+Tauri 在 Linux 上走 CGO + `pkg-config` 找系统的 GTK 与 webview，**只有运行时包不够，得装 `-dev` 包**，
+否则 `cargo build` 会停在 `Package gtk+-3.0 was not found in the pkg-config search path`。
+Tauri links GTK and the webview through CGO + `pkg-config` on Linux; runtime libraries are **not** enough —
+without the `-dev` packages `cargo build` stops at the `pkg-config` search path.
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  libwebkit2gtk-4.1-dev \
+  build-essential curl wget file \
+  libxdo-dev libssl-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev patchelf xdg-utils libfuse2
+```
+
+后四个只有**打包**才要，编二进制本身不需要：`librsvg2-dev` 与 `patchelf` 供 AppImage 的 linuxdeploy
+gtk 插件、`libfuse2` 供 AppImage 运行时、`xdg-utils` 供桌面集成。只要裸可执行文件
+（`npm run tauri build -- --no-bundle`）时可以省掉 `patchelf xdg-utils libfuse2`。
+The last four are **bundler-only**: `librsvg2-dev` + `patchelf` for linuxdeploy's GTK plugin, `libfuse2`
+for the AppImage runtime, `xdg-utils` for desktop integration. Drop `patchelf xdg-utils libfuse2` when
+building a bare binary (`npm run tauri build -- --no-bundle`).
+
+这份清单与 `.github/workflows/release.yml` 里「Install Linux dependencies」那一步一致 —— 改一处要改两处。
+Same list as the "Install Linux dependencies" step in `.github/workflows/release.yml` — change both together.
+Ubuntu 24.04 起系统里只有 `webkit2gtk-4.1`，Tauri 2 要的正好是它（Wails v2 那边才是 `4.0`）。
+
+Windows / macOS 无需额外安装：WebView2 随 Win10/11 的 Edge 预装，macOS 用系统 WKWebView。
+Nothing extra on Windows / macOS: WebView2 ships with Edge on Win10/11, macOS uses the system WKWebView.
+
 ## 单独构建/检查 / Build & check separately
 
 ```bash
