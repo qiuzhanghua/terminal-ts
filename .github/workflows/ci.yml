@@ -34,6 +34,21 @@ jobs:
         working-directory: src-tauri
     steps:
       - uses: actions/checkout@v7
+      # Compiling tauri on Linux needs webkit2gtk & friends via pkg-config; the
+      # runner does not ship them. Windows needs no such step, which is why the
+      # job is green there and red on ubuntu. Mirrors release.yml — the bundler-
+      # only bits (librsvg2-dev, patchelf, libfuse2) are left out because CI
+      # never builds an AppImage.
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev \
+            xdg-utils
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
