@@ -52,20 +52,23 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
 10. **tab 标题 / Tab titles**：`Tab` 拆成 `autoTitle`（只由 OSC 0/2 写）与 `customTitle`（只由用户写），显示值 = `customTitle ?? autoTitle`，纯逻辑在 `src/lib/tab-title.ts`（有单测）。**OSC 绝不能清空 `customTitle`**：oh-my-posh 之类每个提示符都会发一次 OSC，否则重命名下一次回车就丢。重命名编辑期间 `onKeydown` 必须整体让路（否则 `Ctrl+Shift+W` 会关掉正在改名的 tab），提交/取消后焦点要还给 xterm；IME 组合中的 Enter 不能当提交。
     `Tab` splits into `autoTitle` (written only by OSC 0/2) and `customTitle` (written only by the user); the displayed value is `customTitle ?? autoTitle`, with the pure logic in `src/lib/tab-title.ts` (unit-tested). **OSC must never clear `customTitle`**: oh-my-posh and friends emit OSC on every prompt, so a rename would be lost on the next Enter. While the inline rename editor is open, `onKeydown` must bail out entirely (otherwise `Ctrl+Shift+W` closes the tab being renamed); focus returns to xterm after commit/cancel, and Enter during IME composition must not commit.
 
-11. **打包目标 / Bundle targets**：`tauri.conf.json` 的 `bundle.targets` 固定为 `["deb", "rpm"]`，
-    默认构建**不产出 AppImage**——AppImage 每次构建都要从 GitHub 下载 type2-runtime（约 944 KB），
+11. **打包目标 / Bundle targets**：Linux 的默认 targets 在 `src-tauri/tauri.linux.conf.json`
+    （`["deb", "rpm"]`），主配置 `tauri.conf.json` 保持 `"all"` 供 macOS/Windows 出 dmg/msi。
+    本地默认构建**不产出 AppImage**——AppImage 每次构建都要从 GitHub 下载 type2-runtime（约 944 KB），
     GitHub 不通时只会得到泛化的 `failed to run linuxdeploy`。需要 AppImage 时走
     `npm run build:appimage`（`scripts/build-appimage.sh`：缓存 runtime 到
     `${XDG_CACHE_HOME:-~/.cache}/tauri/runtime-x86_64` 并用 `LDAI_RUNTIME_FILE` 传给插件，
-    只有首次联网）。排查加 `-v` 才看得到 linuxdeploy 的真实 stderr。**不要把 targets 改回 `"all"`**，
-    否则日常构建会被网络卡住。
-    `bundle.targets` in `tauri.conf.json` stays `["deb", "rpm"]`; the default build produces **no
+    只有首次联网）。排查加 `-v` 才看得到 linuxdeploy 的真实 stderr。**CI 例外**：
+    `release.yml` 对 Linux 显式传 `--bundles deb,rpm,appimage`，tag 触发的 Release 必须包含 AppImage。
+    Linux defaults live in `src-tauri/tauri.linux.conf.json` (`["deb", "rpm"]`); the main
+    `tauri.conf.json` stays `"all"` so macOS/Windows still produce dmg/msi. Local builds produce **no
     AppImage**, because the appimage plugin downloads type2-runtime from GitHub on every build
     (~944 KB) and a failure only surfaces as a generic `failed to run linuxdeploy`. Use
     `npm run build:appimage` (`scripts/build-appimage.sh`) when you need one: it caches the runtime at
     `${XDG_CACHE_HOME:-~/.cache}/tauri/runtime-x86_64` and passes it via `LDAI_RUNTIME_FILE`, so only
-    the first run needs the network. Add `-v` to see linuxdeploy's real stderr. **Do not restore
-    `"all"`**, or everyday builds will hang on network hiccups.
+    the first run needs the network. Add `-v` to see linuxdeploy's real stderr. **CI is the exception**:
+    `release.yml` passes `--bundles deb,rpm,appimage` on Linux, so tag-triggered releases must include
+    the AppImage.
 
 ## 注意事项 / Notes
 

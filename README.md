@@ -127,13 +127,17 @@ Nothing extra on Windows / macOS: WebView2 ships with Edge on Win10/11, macOS us
 
 ### AppImage（需要联网）/ AppImage (needs network)
 
-默认的 `npm run tauri build` 只出 **deb + rpm**（`src-tauri/tauri.conf.json` 的 `bundle.targets`
-已收窄成 `["deb", "rpm"]`）。AppImage 被单独拎出来，是因为 linuxdeploy 的 appimage 插件
+Linux 上默认的 `npm run tauri build` 只出 **deb + rpm**（`src-tauri/tauri.linux.conf.json` 把
+`bundle.targets` 收窄成 `["deb", "rpm"]`；macOS / Windows 仍走主配置的 `"all"`，产出 dmg / msi）。
+**CI 不受影响**：`.github/workflows/release.yml` 对 Linux 显式传 `--bundles deb,rpm,appimage`，
+所以 tag 触发的 Release 依然包含 AppImage。AppImage 被单独拎出来，是因为 linuxdeploy 的 appimage 插件
 **每次构建都会从 GitHub 现下载 type2-runtime**（约 944 KB，没有本地缓存）；GitHub 不通时
 Tauri 只会打印一句 `failed to run linuxdeploy`，看不出真实原因。
 
-The default `npm run tauri build` now produces **deb + rpm only** (`bundle.targets` is
-`["deb", "rpm"]` in `src-tauri/tauri.conf.json`). AppImage is a separate entry point because
+On Linux the default `npm run tauri build` produces **deb + rpm only** (`src-tauri/tauri.linux.conf.json`
+narrows `bundle.targets` to `["deb", "rpm"]`; macOS / Windows keep `"all"` from the main config and
+still get dmg / msi). **CI is unaffected**: `release.yml` passes `--bundles deb,rpm,appimage` on Linux,
+so tag-triggered releases still ship the AppImage. AppImage is a separate entry point because
 linuxdeploy's appimage plugin **downloads type2-runtime from GitHub on every build** (~944 KB,
 no local cache); when GitHub is unreachable Tauri only prints `failed to run linuxdeploy`.
 

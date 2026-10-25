@@ -49,7 +49,11 @@ jobs:
           - os: ubuntu-22.04
             os_label: linux
             arch: amd64
-            args: ''
+            # 本地默认 targets 在 tauri.linux.conf.json 里收窄为 deb+rpm（AppImage 会联网
+            # 下载 runtime）；CI 里显式要全套，含 AppImage。
+            # Linux defaults live in tauri.linux.conf.json (deb+rpm, so local builds stay
+            # offline); CI asks for the full set explicitly, AppImage included.
+            args: '--bundles deb,rpm,appimage'
           - os: windows-latest
             os_label: windows
             arch: amd64
