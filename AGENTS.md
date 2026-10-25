@@ -16,7 +16,8 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
 - 后端构建 / Backend build：`cd src-tauri && cargo build`
 - 后端测试 / Backend tests：`cd src-tauri && cargo test`
 - Lint：`cd src-tauri && cargo clippy`；`cargo fmt --check`
-- 打包 / Package：`npm run tauri build`
+- 打包 / Package：`npm run tauri build`（deb + rpm）
+- AppImage：`npm run build:appimage`（需要联网缓存 runtime，见要点 11 / needs network for the runtime, see note 11）
 - 安装依赖 / Install deps：`npm install`（受限沙箱中若 esbuild postinstall 被拦，可用 `--ignore-scripts` / in a restricted sandbox, use `--ignore-scripts` if esbuild's postinstall is blocked）
 
 ## 架构 / Architecture
@@ -48,6 +49,24 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
 9. **PATH 继承 / PATH inheritance**：portable-pty 0.8 的 `CommandBuilder` 在 Windows 上会**从注册表重建环境**（`get_base_env`）——`HKLM` 的 PATH 会覆盖父进程 PATH，导致**会话级注入的 PATH 项丢失**（如 `c` 注入的 `cot\bin`、DSH 环境等）。`spawn_shell` 里必须把父进程 PATH 显式传回：`if let Ok(path) = std::env::var("PATH") { cmd.env("PATH", path); }`。**不要删掉这行**。
    portable-pty 0.8's `CommandBuilder` rebuilds the environment from the Windows registry on Windows (`get_base_env`): the HKLM PATH **overrides** the parent PATH, dropping session-injected entries (e.g. `cot\bin` from `c`, DSH env). `spawn_shell` must re-apply the parent PATH explicitly: `if let Ok(path) = std::env::var("PATH") { cmd.env("PATH", path); }`. **Do not remove this line**.
 
+10. **tab 标题 / Tab titles**：`Tab` 拆成 `autoTitle`（只由 OSC 0/2 写）与 `customTitle`（只由用户写），显示值 = `customTitle ?? autoTitle`，纯逻辑在 `src/lib/tab-title.ts`（有单测）。**OSC 绝不能清空 `customTitle`**：oh-my-posh 之类每个提示符都会发一次 OSC，否则重命名下一次回车就丢。重命名编辑期间 `onKeydown` 必须整体让路（否则 `Ctrl+Shift+W` 会关掉正在改名的 tab），提交/取消后焦点要还给 xterm；IME 组合中的 Enter 不能当提交。
+    `Tab` splits into `autoTitle` (written only by OSC 0/2) and `customTitle` (written only by the user); the displayed value is `customTitle ?? autoTitle`, with the pure logic in `src/lib/tab-title.ts` (unit-tested). **OSC must never clear `customTitle`**: oh-my-posh and friends emit OSC on every prompt, so a rename would be lost on the next Enter. While the inline rename editor is open, `onKeydown` must bail out entirely (otherwise `Ctrl+Shift+W` closes the tab being renamed); focus returns to xterm after commit/cancel, and Enter during IME composition must not commit.
+
+11. **打包目标 / Bundle targets**：`tauri.conf.json` 的 `bundle.targets` 固定为 `["deb", "rpm"]`，
+    默认构建**不产出 AppImage**——AppImage 每次构建都要从 GitHub 下载 type2-runtime（约 944 KB），
+    GitHub 不通时只会得到泛化的 `failed to run linuxdeploy`。需要 AppImage 时走
+    `npm run build:appimage`（`scripts/build-appimage.sh`：缓存 runtime 到
+    `${XDG_CACHE_HOME:-~/.cache}/tauri/runtime-x86_64` 并用 `LDAI_RUNTIME_FILE` 传给插件，
+    只有首次联网）。排查加 `-v` 才看得到 linuxdeploy 的真实 stderr。**不要把 targets 改回 `"all"`**，
+    否则日常构建会被网络卡住。
+    `bundle.targets` in `tauri.conf.json` stays `["deb", "rpm"]`; the default build produces **no
+    AppImage**, because the appimage plugin downloads type2-runtime from GitHub on every build
+    (~944 KB) and a failure only surfaces as a generic `failed to run linuxdeploy`. Use
+    `npm run build:appimage` (`scripts/build-appimage.sh`) when you need one: it caches the runtime at
+    `${XDG_CACHE_HOME:-~/.cache}/tauri/runtime-x86_64` and passes it via `LDAI_RUNTIME_FILE`, so only
+    the first run needs the network. Add `-v` to see linuxdeploy's real stderr. **Do not restore
+    `"all"`**, or everyday builds will hang on network hiccups.
+
 ## 注意事项 / Notes
 
 - 前端改动后需 `npm run build` 再打包；`npm run tauri dev` 有 HMR，但 xterm 构造函数参数（如 `fontFamily`）改动建议重启应用。
@@ -56,5 +75,7 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
   Rebuild the backend after changing `tauri.conf.json` / capabilities.
 - 事件名与命令名是前后端约定，改动需同步 `TerminalView.vue` 与 `lib.rs`。
   Event and command names are a frontend/backend contract; keep `TerminalView.vue` and `lib.rs` in sync.
+- 前端测试 / Frontend tests：`npm test` 跑 vitest——`src/lib/*.test.ts` 是纯逻辑，`src/App.test.ts` 是组件测试（`@vue/test-utils` + happy-dom）。组件测试文件头必须写 `// @vitest-environment happy-dom`，并 mock 掉 `@tauri-apps/api/core`、`@tauri-apps/api/window` 与 `TerminalView.vue`（xterm 在 happy-dom 里跑不起来，替身只保留 `fit`/`focus` 与 `title-change`）。
+  `npm test` runs vitest: `src/lib/*.test.ts` cover pure logic, `src/App.test.ts` is the component suite (`@vue/test-utils` + happy-dom). Component test files must start with `// @vitest-environment happy-dom` and mock `@tauri-apps/api/core`, `@tauri-apps/api/window` and `TerminalView.vue` (xterm cannot run under happy-dom; the stub only keeps `fit`/`focus` and the `title-change` event).
 - CI（`.github/workflows/ci.yml`）：前端 build + vitest；后端 ubuntu/windows 双平台 fmt/clippy/test。提交前本地先跑同样的检查。
   CI (`.github/workflows/ci.yml`): frontend build + vitest; backend fmt/clippy/test on ubuntu & windows. Run the same checks locally before committing.

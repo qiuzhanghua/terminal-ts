@@ -11,6 +11,7 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 - **真实 PTY 会话 / Real PTY sessions**：Windows 使用 ConPTY，其他平台使用 Unix PTY，交互式程序（vim、htop 等）完整可用 / ConPTY on Windows, Unix PTY elsewhere; interactive programs (vim, htop, …) work fully
 - **支持管道、重定向 / Pipes & redirection**：`ls -la | grep rust`、`echo hello > file.txt`、`cat < input.txt`
 - **多标签页 / Multiple tabs**：新建（＋ / Ctrl+Shift+T）、关闭（× / 鼠标中键 / Ctrl+Shift+W）、切换（Ctrl+Tab / Ctrl+PageUp·PageDown）/ new (＋ / Ctrl+Shift+T), close (× / middle-click / Ctrl+Shift+W), switch (Ctrl+Tab / Ctrl+PageUp·PageDown)
+- **标签页重命名 / Rename tabs**：双击 tab 或按 F2 改名，Enter 提交、Esc 取消；右键菜单可“恢复自动标题”（回到 shell 通过 OSC 0/2 给的标题，清空输入提交同效）；窗口标题随之更新 / double-click a tab or press F2 to rename it (Enter commits, Esc cancels); the context menu restores the shell-provided title (submitting an empty name does the same); the window title follows
 - **复制粘贴 / Copy & paste**：Ctrl+Shift+C 复制选中、Ctrl+Shift+V 粘贴、右键（有选中→复制，无选中→粘贴）/ copy selection (Ctrl+Shift+C), paste (Ctrl+Shift+V), right-click (copy if selection, else paste)
 - **终端内搜索 / In-terminal search**：Ctrl+Shift+F，Enter/Shift+Enter 下一个/上一个，Esc 关闭 / open with Ctrl+Shift+F; Enter / Shift+Enter for next / previous; Esc closes
 - **字体缩放 / Font zoom**：Ctrl+= / Ctrl+- 缩放、Ctrl+0 复位 / zoom with Ctrl+= / Ctrl+-, reset with Ctrl+0
@@ -33,7 +34,7 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 | 字段 / Field | 类型 | 说明 / Meaning |
 |---|---|---|
 | `shell` | string \| null | 覆盖 shell 检测（如 `"pwsh"`、`"cmd"`、`"bash"`）；null = 自动检测 |
-| `font_size` | number | 字号（默认 14） |
+| `font_size` | number | 字号（默认 20） |
 | `font_family` | string \| null | 覆盖运行时字体探测（如 `"JetBrainsMono NFM"`）；null = 自动 |
 | `theme` | string | `dark` / `light` / `solarized-dark` / `dracula` / `tokyo-night` / `followSystem` |
 | `cursor_blink` | boolean | 光标闪烁（默认 true） |
@@ -123,6 +124,40 @@ Ubuntu 24.04 起系统里只有 `webkit2gtk-4.1`，Tauri 2 要的正好是它（
 
 Windows / macOS 无需额外安装：WebView2 随 Win10/11 的 Edge 预装，macOS 用系统 WKWebView。
 Nothing extra on Windows / macOS: WebView2 ships with Edge on Win10/11, macOS uses the system WKWebView.
+
+### AppImage（需要联网）/ AppImage (needs network)
+
+默认的 `npm run tauri build` 只出 **deb + rpm**（`src-tauri/tauri.conf.json` 的 `bundle.targets`
+已收窄成 `["deb", "rpm"]`）。AppImage 被单独拎出来，是因为 linuxdeploy 的 appimage 插件
+**每次构建都会从 GitHub 现下载 type2-runtime**（约 944 KB，没有本地缓存）；GitHub 不通时
+Tauri 只会打印一句 `failed to run linuxdeploy`，看不出真实原因。
+
+The default `npm run tauri build` now produces **deb + rpm only** (`bundle.targets` is
+`["deb", "rpm"]` in `src-tauri/tauri.conf.json`). AppImage is a separate entry point because
+linuxdeploy's appimage plugin **downloads type2-runtime from GitHub on every build** (~944 KB,
+no local cache); when GitHub is unreachable Tauri only prints `failed to run linuxdeploy`.
+
+```bash
+npm run build:appimage        # 等价于 bash scripts/build-appimage.sh
+```
+
+脚本会把 runtime 缓存到 `${XDG_CACHE_HOME:-~/.cache}/tauri/runtime-x86_64`，再通过插件支持的
+`LDAI_RUNTIME_FILE` 传给它 —— **只有第一次需要联网**。想用自己已有的 runtime：
+
+The script caches the runtime at `${XDG_CACHE_HOME:-~/.cache}/tauri/runtime-x86_64` and hands it to
+the plugin via `LDAI_RUNTIME_FILE` — **only the first run needs the network**. To reuse your own copy:
+
+```bash
+LDAI_RUNTIME_FILE=/path/to/runtime-x86_64 npm run tauri build -- --bundles appimage
+```
+
+排查时加 `-v` 才能看到 linuxdeploy 的真实 stderr（例如 `Downloading runtime file from ...` 失败）：
+
+Add `-v` when troubleshooting, otherwise linuxdeploy's real stderr is swallowed:
+
+```bash
+npm run tauri build -- --bundles appimage -v
+```
 
 ## 单独构建/检查 / Build & check separately
 

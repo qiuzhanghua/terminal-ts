@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -23,6 +23,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "title-change", title: string): void;
   (e: "exit", code: number | null): void;
+  /** 缩放请求：字号由 App 统一持有，这样 tab 栏和所有标签页一起变。 */
+  (e: "zoom", size: number): void;
+  (e: "zoom-reset"): void;
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
@@ -86,19 +89,32 @@ async function pasteClipboard(): Promise<void> {
 
 function zoomBy(delta: number): void {
   if (!term) return;
-  const current = term.options.fontSize ?? 16;
+  const current = term.options.fontSize ?? 20;
   const next = Math.min(48, Math.max(8, current + delta));
-  if (next !== current) {
-    term.options.fontSize = next;
-    fit();
-  }
+  if (next === current) return;
+  // 先本地生效（立即重排），再把新字号交给 App —— App 会通过 props 同步到
+  // 所有标签页和 tab 栏，避免每个终端各有一套字号。
+  term.options.fontSize = next;
+  fit();
+  emit("zoom", next);
 }
 
 function resetZoom(): void {
   if (!term) return;
-  term.options.fontSize = props.fontSize ?? 16;
-  fit();
+  // 配置里的原始字号在 App 手上（props.fontSize 可能已经被缩放过）。
+  emit("zoom-reset");
 }
+
+// 字号是受控属性：App 更新后所有标签页（含隐藏的）一起换字号；
+// 隐藏的终端 fit() 会跳过 0 尺寸，切回来时 activate() 再 fit 一次。
+watch(
+  () => props.fontSize,
+  (value) => {
+    if (!term || !value || term.options.fontSize === value) return;
+    term.options.fontSize = value;
+    fit();
+  },
+);
 
 /* ---------- search ---------- */
 
@@ -130,7 +146,7 @@ onMounted(async () => {
     // ligature / Nerd font is preferred. config.json can override with
     // `fontFamily` / `font_size` / `theme` / `cursor_blink` / `scrollback`.
     fontFamily: props.fontFamily && props.fontFamily.length > 0 ? props.fontFamily : await buildTerminalFontFamily(),
-    fontSize: props.fontSize ?? 16,
+    fontSize: props.fontSize ?? 20,
     lineHeight: 1.2,
     cursorBlink: props.cursorBlink ?? true,
     scrollback: props.scrollback ?? 10000,

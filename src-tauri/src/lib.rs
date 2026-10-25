@@ -108,7 +108,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             shell: None,
-            font_size: 16,
+            font_size: 20,
             font_family: None,
             theme: "dark".to_string(),
             cursor_blink: true,
@@ -577,7 +577,7 @@ mod tests {
     fn app_config_defaults() {
         let c = AppConfig::default();
         assert_eq!(c.shell, None);
-        assert_eq!(c.font_size, 16);
+        assert_eq!(c.font_size, 20);
         assert_eq!(c.font_family, None);
         assert_eq!(c.theme, "dark");
         assert!(c.cursor_blink);
@@ -606,7 +606,7 @@ mod tests {
     fn app_config_roundtrip() {
         let c = AppConfig {
             shell: Some("cmd".into()),
-            font_size: 16,
+            font_size: 20,
             font_family: Some("JetBrainsMono NFM".into()),
             theme: "tokyo-night".into(),
             cursor_blink: false,
