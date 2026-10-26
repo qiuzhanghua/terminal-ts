@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import TerminalView from "./components/TerminalView.vue";
+import QuitConfirmDialog from "./components/QuitConfirmDialog.vue";
 import { loadConfig, type AppConfig } from "./lib/config";
 import { resolveTheme, isLightTheme } from "./lib/themes";
 import { sessionCwd, spawnShell } from "./lib/session";
+import {
+  nextPendingClose,
+  renamedTabs,
+  type PendingClose,
+} from "./lib/close-guard";
 import {
   applyAutoTitle,
   displayTitle,
@@ -183,6 +190,51 @@ function onExit(id: number): void {
   closeTab(id);
 }
 
+/* ---------- 退出确认 ---------- */
+
+const pendingClose = ref<PendingClose | null>(null);
+/** 弹窗里列出的标签页；随 tabs 实时变化。 */
+const renamedForQuit = computed(() => renamedTabs(tabs.value));
+let unlistenCloseRequested: UnlistenFn | null = null;
+let unlistenQuitRequested: UnlistenFn | null = null;
+
+function beginQuitConfirm(kind: PendingClose): void {
+  // 行内改名还没结束就先放弃，避免草稿和弹窗状态打架。
+  if (editingId.value !== null) cancelEdit();
+  pendingClose.value = nextPendingClose(pendingClose.value, kind);
+}
+
+async function confirmQuit(): Promise<void> {
+  const kind = pendingClose.value;
+  if (kind === null) return;
+  pendingClose.value = null;
+
+  // 本应用只有一个窗口，确认“关闭窗口”与“退出应用”等价；
+  // 统一交给 Rust 的 quit_app，避免再走一次 close 事件被自己拦下。
+  await invoke("quit_app").catch((e) => console.error("quit_app failed:", e));
+}
+
+function cancelQuit(): void {
+  pendingClose.value = null;
+  nextTick(() => {
+    const id = activeId.value;
+    if (id != null) viewRefs.value[id]?.focus();
+  });
+}
+
+/** 点击弹窗里的名字 = 取消退出，并切到那个标签页。 */
+async function jumpToQuitTab(id: number): Promise<void> {
+  pendingClose.value = null;
+  await activate(id);
+}
+
+// 弹窗开着时，被保护的标签页可能因 shell 退出而消失；全没了就直接放行。
+watch(renamedForQuit, (list) => {
+  if (pendingClose.value !== null && list.length === 0) {
+    void confirmQuit();
+  }
+});
+
 /* ---------- tab context menu ---------- */
 
 interface MenuState {
@@ -317,7 +369,7 @@ function onKeydown(e: KeyboardEvent): void {
   // 重命名期间所有全局快捷键让路（否则 Ctrl+Shift+W 会把正在改名的 tab 关掉）
   // 只按编辑态判断：xterm 的输入是隐藏的 <textarea class="xterm-helper-textarea">，
   // 不能因为 target 是 TEXTAREA 就让路，否则所有快捷键（F2、Ctrl+Shift+T…）都会被吞。
-  if (editingId.value !== null || menu.value !== null) return;
+  if (editingId.value !== null || menu.value !== null || pendingClose.value !== null) return;
 
   if (e.ctrlKey && e.shiftKey && e.key === "T") {
     e.preventDefault();
@@ -353,10 +405,34 @@ onMounted(async () => {
 
   addTab();
   window.addEventListener("keydown", onKeydown, true);
+
+  // 窗口关闭（X / Alt+F4）：有改过名的标签页才拦。
+  unlistenCloseRequested = await appWindow.onCloseRequested((event) => {
+    // 注册了监听就等于接管关闭：不 preventDefault 时 API 会自己调 destroy()，
+    // 而 destroy 需要额外权限，所以这里统一拦下、统一走 quit_app。
+    event.preventDefault();
+    if (renamedForQuit.value.length === 0) {
+      void invoke("quit_app").catch((e) => console.error("quit_app failed:", e));
+      return;
+    }
+    beginQuitConfirm("close-window");
+  });
+
+  // macOS Cmd+Q：Rust 侧 prevent_exit 后转发到前端，复用同一个弹窗。
+  unlistenQuitRequested = await listen("quit-requested", () => {
+    if (pendingClose.value !== null) return;
+    if (renamedForQuit.value.length === 0) {
+      void invoke("quit_app").catch((e) => console.error("quit_app failed:", e));
+      return;
+    }
+    beginQuitConfirm("quit-app");
+  });
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown, true);
+  unlistenCloseRequested?.();
+  unlistenQuitRequested?.();
 });
 </script>
 
@@ -442,6 +518,14 @@ onBeforeUnmount(() => {
         <span>关闭标签页</span><span class="tab-menu-hint">Ctrl+Shift+W</span>
       </button>
     </div>
+    <QuitConfirmDialog
+      v-if="pendingClose"
+      :tabs="renamedForQuit"
+      :active-id="activeId"
+      @cancel="cancelQuit"
+      @confirm="confirmQuit"
+      @jump="jumpToQuitTab"
+    />
   </div>
 </template>
 

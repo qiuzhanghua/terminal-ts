@@ -14,6 +14,7 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 - **标签页重命名 / Rename tabs**：双击 tab 或按 F2 改名，Enter 提交、Esc 取消；右键菜单可“恢复自动标题”（回到 shell 通过 OSC 0/2 给的标题，清空输入提交同效）；窗口标题随之更新 / double-click a tab or press F2 to rename it (Enter commits, Esc cancels); the context menu restores the shell-provided title (submitting an empty name does the same); the window title follows
 - **复制粘贴 / Copy & paste**：Ctrl+Shift+C 复制选中、Ctrl+Shift+V 粘贴、右键（有选中→复制，无选中→粘贴）/ copy selection (Ctrl+Shift+C), paste (Ctrl+Shift+V), right-click (copy if selection, else paste)
 - **终端内搜索 / In-terminal search**：Ctrl+Shift+F，Enter/Shift+Enter 下一个/上一个，Esc 关闭 / open with Ctrl+Shift+F; Enter / Shift+Enter for next / previous; Esc closes
+- **退出确认 / Quit confirmation**：关闭窗口（或 macOS `Cmd+Q`）时若有改过名的标签页，会列出这些标签（主行自定义名、副行 shell 标题）让你确认；点某一项可跳回该标签，Esc / 取消则放弃退出 / closing the window (or `Cmd+Q` on macOS) with renamed tabs lists them (custom name plus the shell title underneath) and asks first; click an entry to jump back to that tab, Esc / Cancel aborts the exit
 - **字体缩放 / Font zoom**：Ctrl+= / Ctrl+- 缩放、Ctrl+0 复位 / zoom with Ctrl+= / Ctrl+-, reset with Ctrl+0
 - **配置文件 / Config file**：`config.json` 可覆盖 shell、字体、字号、主题等，首次运行自动生成 / `config.json` overrides shell, font, size, theme, etc.; auto-created on first run
 - **主题 / Themes**：dark、light、solarized-dark、dracula、tokyo-night 或跟随系统深色模式 / preset themes or follow the OS dark/light mode

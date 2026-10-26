@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   theme: vi.fn(async () => "dark"),
   fit: vi.fn(),
   focus: vi.fn(),
+  closeHandler: null as ((e: { preventDefault: () => void }) => void) | null,
+  quitHandler: null as (() => void) | null,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
@@ -28,7 +30,18 @@ vi.mock("@tauri-apps/api/window", () => ({
     setTitle: mocks.setTitle,
     close: mocks.close,
     theme: mocks.theme,
+    onCloseRequested: (cb: (e: { preventDefault: () => void }) => void) => {
+      mocks.closeHandler = cb;
+      return Promise.resolve(() => {});
+    },
   }),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (name: string, cb: () => void) => {
+    if (name === "quit-requested") mocks.quitHandler = cb;
+    return Promise.resolve(() => {});
+  },
 }));
 
 vi.mock("./lib/config", () => ({
@@ -56,7 +69,7 @@ vi.mock("./components/TerminalView.vue", async () => {
         cursorBlink: Boolean,
         scrollback: Number,
       },
-      emits: ["title-change", "exit"],
+      emits: ["title-change", "exit", "zoom", "zoom-reset"],
       setup(_props, { expose }) {
         expose({ fit: mocks.fit, focus: mocks.focus });
         return () => h("div", { class: "terminal-stub" });
@@ -88,7 +101,22 @@ afterEach(() => {
 async function mountApp(): Promise<VueWrapper> {
   wrapper = mount(App, { attachTo: document.body });
   await flushPromises();
+  await flushPromises();
   return wrapper;
+}
+
+/** 模拟点击窗口 X / Alt+F4：返回是否调用了 preventDefault。 */
+async function requestWindowClose(): Promise<boolean> {
+  const event = { preventDefault: vi.fn() };
+  mocks.closeHandler?.(event);
+  await flushPromises();
+  return event.preventDefault.mock.calls.length > 0;
+}
+
+/** 模拟 macOS Cmd+Q 经 Rust 转发过来的 quit-requested。 */
+async function requestAppQuit(): Promise<void> {
+  mocks.quitHandler?.();
+  await flushPromises();
 }
 
 /** 全局快捷键挂在 window 上（capture），所以从 window 派发。 */
@@ -305,6 +333,99 @@ describe("快捷键让路", () => {
     press("W", { ctrlKey: true, shiftKey: true });
     await flushPromises();
     expect(mocks.close).toHaveBeenCalled();
+  });
+});
+
+describe("退出确认", () => {
+  it("没有改过名的标签页时直接退出，不弹窗", async () => {
+    const w = await mountApp();
+    expect(await requestWindowClose()).toBe(true);
+    expect(w.find(".quit-dialog").exists()).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
+  });
+
+  it("有改过名的标签页时拦下关闭并列出主副行", async () => {
+    const w = await mountApp();
+    emitOsc(w, "q@host: ~/src");
+    await nextTick();
+    await renameTo(w, "构建");
+
+    expect(await requestWindowClose()).toBe(true);
+    const dialog = w.find(".quit-dialog");
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.find(".quit-row-title").text()).toBe("构建");
+    expect(dialog.find(".quit-row-sub").text()).toBe("q@host: ~/src");
+  });
+
+  it("取消后不关闭窗口，弹窗消失", async () => {
+    const w = await mountApp();
+    await renameTo(w, "构建");
+    await requestWindowClose();
+
+    await w.findAll(".quit-btn")[0].trigger("click");
+    await flushPromises();
+
+    expect(w.find(".quit-dialog").exists()).toBe(false);
+    expect(mocks.close).not.toHaveBeenCalled();
+  });
+
+  it("“仍要退出”调用 quit_app 退出应用", async () => {
+    const w = await mountApp();
+    await renameTo(w, "构建");
+    await requestWindowClose();
+
+    await w.find(".quit-btn.danger").trigger("click");
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
+  });
+
+  it("点击列表项等于取消退出并切到该标签页", async () => {
+    const w = await mountApp();
+    await renameTo(w, "第一个");
+    press("T", { ctrlKey: true, shiftKey: true });
+    await flushPromises();
+    await renameTo(w, "第二个");
+
+    await requestWindowClose();
+    const rows = w.findAll(".quit-row");
+    expect(rows).toHaveLength(2);
+    await rows[0].trigger("click");
+    await flushPromises();
+
+    expect(w.find(".quit-dialog").exists()).toBe(false);
+    expect(mocks.close).not.toHaveBeenCalled();
+    expect(w.findAll(".tab")[0].classes()).toContain("active");
+  });
+
+  it("弹窗开着时改名的标签页都退出，则自动放行关闭", async () => {
+    const w = await mountApp();
+    await renameTo(w, "构建");
+    await requestWindowClose();
+    expect(w.find(".quit-dialog").exists()).toBe(true);
+
+    w.findComponent({ name: "TerminalView" }).vm.$emit("exit", 0);
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
+  });
+
+  it("macOS 的 quit-requested 复用同一个弹窗，确认后调用 quit_app", async () => {
+    const w = await mountApp();
+    await renameTo(w, "构建");
+    await requestAppQuit();
+    expect(w.find(".quit-dialog").exists()).toBe(true);
+
+    await w.find(".quit-btn.danger").trigger("click");
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
+  });
+
+  it("没有改名标签页时 quit-requested 直接退出", async () => {
+    await mountApp();
+    await requestAppQuit();
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
   });
 });
 

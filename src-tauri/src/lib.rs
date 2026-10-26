@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -497,6 +497,21 @@ fn resize_session(
     Ok(())
 }
 
+/// 前端完成退出确认后置位：此后 `ExitRequested` 不再拦截，应用真正退出。
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// Quit the app after the frontend has confirmed.
+///
+/// macOS `Cmd+Q` normally arrives as `RunEvent::ExitRequested`, which the run
+/// loop turns into a `quit-requested` event for the frontend. Once the user
+/// confirms, the frontend calls this command: the flag makes sure the exit is
+/// not intercepted a second time.
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 /// Kill a session (closing the tab) and release its pty.
 #[tauri::command]
 fn kill_session(state: State<'_, SessionManager>, id: u64) -> Result<(), String> {
@@ -553,7 +568,8 @@ pub fn run() {
             resize_session,
             kill_session,
             get_config,
-            save_config
+            save_config,
+            quit_app
         ])
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::Destroyed) {
@@ -562,10 +578,22 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                kill_all_sessions(app);
+        .run(|app, event| match event {
+            // macOS 的 Cmd+Q 走 ExitRequested，不经过窗口的 close 事件；
+            // 有窗口且用户还没确认时拦下来，交给前端弹确认框。
+            // 没有窗口（用户已确认关窗）或已确认退出时放行。
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                let has_window = !app.webview_windows().is_empty();
+                if has_window && !QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("quit-requested", ());
+                    }
+                }
             }
+            tauri::RunEvent::Exit => kill_all_sessions(app),
+            _ => {}
         });
 }
 

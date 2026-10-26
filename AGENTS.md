@@ -70,6 +70,9 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
     `release.yml` passes `--bundles deb,rpm,appimage` on Linux, so tag-triggered releases must include
     the AppImage.
 
+12. **退出确认 / Quit confirmation**：`onCloseRequested` **一旦注册即接管关闭**——回调里不调 `preventDefault()` 时，Tauri 的 JS 包装会自己调 `destroy()`，而那需要 `core:window:allow-destroy`（本项目没开），结果是窗口根本关不掉。所以这里统一 `preventDefault()`，再走 `invoke("quit_app")`；没有改名标签时直接 `quit_app`，有则弹 `QuitConfirmDialog`。macOS `Cmd+Q` 由 Rust 的 `RunEvent::ExitRequested` 拦下并 `emit("quit-requested")`。列表只认 `customTitle`，`autoTitle` 只做副行；**不要**改回 `appWindow.close()/destroy()` 的路径。
+    `onCloseRequested` **takes over closing as soon as it is registered**: if the callback does not call `preventDefault()`, Tauri's JS wrapper calls `destroy()`, which needs `core:window:allow-destroy` (not enabled here) — the window simply never closes. So always `preventDefault()` and go through `invoke("quit_app")`; with no renamed tabs it quits immediately, otherwise it shows `QuitConfirmDialog`. macOS `Cmd+Q` is intercepted in Rust (`RunEvent::ExitRequested`) and re-emitted as `quit-requested`. The list only counts `customTitle`; `autoTitle` is the secondary line. **Do not** go back to `appWindow.close()/destroy()`.
+
 ## 注意事项 / Notes
 
 - 前端改动后需 `npm run build` 再打包；`npm run tauri dev` 有 HMR，但 xterm 构造函数参数（如 `fontFamily`）改动建议重启应用。
