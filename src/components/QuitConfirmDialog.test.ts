@@ -2,36 +2,65 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import QuitConfirmDialog from "./QuitConfirmDialog.vue";
+import type { ConfirmRow } from "../lib/close-guard";
 
-const tabs = [
-  { id: 1, title: "构建", shellTitle: "q@host: ~/src" },
-  { id: 2, title: "编辑器", shellTitle: "nvim README.md" },
+const rows: ConfirmRow[] = [
+  {
+    id: 1,
+    title: "构建",
+    shellTitle: "q@host: ~/src",
+    custom: true,
+    foreground: { pid: 9, name: "cargo" },
+    background: [{ pid: 10, name: "node" }],
+  },
+  {
+    id: 2,
+    title: "q@host: ~",
+    shellTitle: "q@host: ~",
+    custom: false,
+    foreground: null,
+    background: [{ pid: 11, name: "npm" }],
+  },
 ];
 
-function mountDialog(activeId: number | null = 1) {
-  return mount(QuitConfirmDialog, {
-    props: { tabs, activeId },
-    attachTo: document.body,
-  });
+function mountDialog(action: "quit" | "close-tab" = "quit", activeId: number | null = 1) {
+  return mount(QuitConfirmDialog, { props: { rows, action, activeId }, attachTo: document.body });
 }
 
 describe("QuitConfirmDialog", () => {
-  it("renders a main line and a dim shell-title line per tab", () => {
+  it("shows a main line, badges for each reason, and the shell title", () => {
     const w = mountDialog();
-    const rows = w.findAll(".quit-row");
-    expect(rows).toHaveLength(2);
-    expect(rows[0].find(".quit-row-title").text()).toBe("构建");
-    expect(rows[0].find(".quit-row-sub").text()).toBe("q@host: ~/src");
+    const first = w.findAll(".quit-row")[0];
+    expect(first.find(".quit-row-title").text()).toBe("构建");
+    expect(first.find(".quit-row-sub").text()).toBe("q@host: ~/src");
+    const badges = first.findAll(".quit-badge").map((b) => b.text());
+    expect(badges).toEqual(expect.arrayContaining(["自定义标题", "运行中 cargo", "后台 1 个进程"]));
+    w.unmount();
+  });
+
+  it("uses quit wording for a window close", () => {
+    const w = mountDialog("quit");
+    expect(w.find(".quit-title").text()).toBe("退出确认");
+    expect(w.find(".quit-btn.danger").text()).toBe("仍要退出");
+    expect(w.find(".quit-note").text()).toContain("所有终端会话");
+    w.unmount();
+  });
+
+  it("uses close wording for a single tab", () => {
+    const w = mountDialog("close-tab");
+    expect(w.find(".quit-title").text()).toBe("关闭标签页");
+    expect(w.find(".quit-btn.danger").text()).toBe("仍要关闭");
+    expect(w.find(".quit-note").text()).toContain("这个标签页");
     w.unmount();
   });
 
   it("marks the active tab and turns a row into a jump action", async () => {
-    const w = mountDialog(2);
-    const rows = w.findAll(".quit-row");
-    expect(rows[0].classes()).not.toContain("active");
-    expect(rows[1].classes()).toContain("active");
+    const w = mountDialog("quit", 2);
+    const items = w.findAll(".quit-row");
+    expect(items[0].classes()).not.toContain("active");
+    expect(items[1].classes()).toContain("active");
 
-    await rows[0].trigger("click");
+    await items[0].trigger("click");
     expect(w.emitted("jump")).toEqual([[1]]);
     w.unmount();
   });

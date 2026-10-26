@@ -70,7 +70,9 @@ A Tauri 2 desktop terminal emulator (a recreation of `../terminal` with enhancem
     `release.yml` passes `--bundles deb,rpm,appimage` on Linux, so tag-triggered releases must include
     the AppImage.
 
-12. **退出确认 / Quit confirmation**：`onCloseRequested` **一旦注册即接管关闭**——回调里不调 `preventDefault()` 时，Tauri 的 JS 包装会自己调 `destroy()`，而那需要 `core:window:allow-destroy`（本项目没开），结果是窗口根本关不掉。所以这里统一 `preventDefault()`，再走 `invoke("quit_app")`；没有改名标签时直接 `quit_app`，有则弹 `QuitConfirmDialog`。macOS `Cmd+Q` 由 Rust 的 `RunEvent::ExitRequested` 拦下并 `emit("quit-requested")`。列表只认 `customTitle`，`autoTitle` 只做副行；**不要**改回 `appWindow.close()/destroy()` 的路径。
+12. **关闭确认 / Close confirmation**：`onCloseRequested` **一旦注册即接管关闭**——回调里不调 `preventDefault()` 时，Tauri 的 JS 包装会自己调 `destroy()`，而那需要 `core:window:allow-destroy`（本项目没开），结果是窗口根本关不掉。所以统一 `preventDefault()` 后再决定：有内容可提醒就弹 `QuitConfirmDialog`，否则 `invoke("quit_app")`。**不要**改回 `appWindow.close()/destroy()`。
+    提醒条件：窗口关闭 / macOS `Cmd+Q` 看「`customTitle != null` 或 `session_activity` 报告有前台作业/≥2s 的后台子进程」；关闭单个标签只看后者（改名不算）。`confirm_on_running_processes=false` 时忽略进程这一路。macOS `Cmd+Q` 由 Rust `RunEvent::ExitRequested` 拦下并 `emit("quit-requested")`。
+    进程探测：Unix 用 `master.process_group_leader()`（`tcgetpgrp`）判断前台作业，Windows 没有这个信号，只靠进程树；后台一律用 sysinfo 遍历 shell 后代 + 2 秒年龄阈值（过滤 oh-my-posh 这类提示符进程），Windows 额外排除 `conhost.exe` / `OpenConsole.exe`。关闭标签/退出时 `kill_tree()` 会按进程树 SIGTERM → 150ms → SIGKILL，保证「会话结束」名副其实。
     `onCloseRequested` **takes over closing as soon as it is registered**: if the callback does not call `preventDefault()`, Tauri's JS wrapper calls `destroy()`, which needs `core:window:allow-destroy` (not enabled here) — the window simply never closes. So always `preventDefault()` and go through `invoke("quit_app")`; with no renamed tabs it quits immediately, otherwise it shows `QuitConfirmDialog`. macOS `Cmd+Q` is intercepted in Rust (`RunEvent::ExitRequested`) and re-emitted as `quit-requested`. The list only counts `customTitle`; `autoTitle` is the secondary line. **Do not** go back to `appWindow.close()/destroy()`.
 
 ## 注意事项 / Notes

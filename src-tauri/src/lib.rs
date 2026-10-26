@@ -66,6 +66,137 @@ impl SessionBuffer {
     }
 }
 
+/// One process worth telling the user about.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct ActivityProcess {
+    pid: u32,
+    name: String,
+}
+
+/// What a session is doing right now: a foreground job and/or long-lived
+/// descendants. Empty fields mean the tab is idle.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct SessionActivity {
+    id: u64,
+    foreground: Option<ActivityProcess>,
+    background: Vec<ActivityProcess>,
+}
+
+/// Flat process snapshot, kept separate from `sysinfo` so the filtering logic
+/// stays testable without touching the real process table.
+#[derive(Clone, Debug, PartialEq)]
+struct ProcInfo {
+    pid: u32,
+    ppid: Option<u32>,
+    name: String,
+    age_secs: u64,
+}
+
+/// BFS the children map. Leaves are not sorted; callers kill in reverse order.
+fn collect_descendants(procs: &[ProcInfo], root: u32) -> Vec<u32> {
+    let mut found: Vec<u32> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(parent) = stack.pop() {
+        for proc in procs {
+            if proc.ppid == Some(parent) && !found.contains(&proc.pid) {
+                found.push(proc.pid);
+                stack.push(proc.pid);
+            }
+        }
+    }
+    found
+}
+
+/// Decide what to report for one session.
+///
+/// * `foreground` is the pty's foreground process group (Unix `tcgetpgrp`);
+///   anything other than the shell itself is a foreground job.
+/// * `background` is every descendant older than `min_age_secs` that is not
+///   already the foreground job. The age threshold filters out prompt helpers
+///   (oh-my-posh, git status) that come and go in milliseconds.
+fn busy_activity(
+    shell_pid: u32,
+    foreground_pgid: Option<u32>,
+    procs: &[ProcInfo],
+    min_age_secs: u64,
+    excluded_names: &[&str],
+) -> (Option<ActivityProcess>, Vec<ActivityProcess>) {
+    let fg_pid = foreground_pgid.filter(|pid| *pid != 0 && *pid != shell_pid);
+
+    let foreground = fg_pid.map(|pid| {
+        let name = procs
+            .iter()
+            .find(|proc| proc.pid == pid)
+            .map(|proc| proc.name.clone())
+            .unwrap_or_else(|| "?".to_string());
+        ActivityProcess { pid, name }
+    });
+
+    let mut background: Vec<ActivityProcess> = collect_descendants(procs, shell_pid)
+        .into_iter()
+        .filter(|pid| Some(*pid) != fg_pid)
+        .filter_map(|pid| procs.iter().find(|proc| proc.pid == pid).cloned())
+        .filter(|proc| proc.age_secs >= min_age_secs)
+        .filter(|proc| {
+            !excluded_names
+                .iter()
+                .any(|excluded| proc.name.eq_ignore_ascii_case(excluded))
+        })
+        .map(|proc| ActivityProcess {
+            pid: proc.pid,
+            name: proc.name,
+        })
+        .collect();
+    background.sort_by(|a, b| a.name.cmp(&b.name).then(a.pid.cmp(&b.pid)));
+    background.truncate(5);
+
+    (foreground, background)
+}
+
+/// Terminate a process tree: leaves first, SIGTERM, a short grace period,
+/// then SIGKILL for whatever survived. Used when a tab is closed or the app
+/// quits, so confirming "this ends the session" actually ends it.
+fn kill_tree(root: u32) {
+    let snapshot = || {
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::All);
+        let procs: Vec<ProcInfo> = system
+            .processes()
+            .iter()
+            .map(|(pid, proc)| ProcInfo {
+                pid: pid.as_u32(),
+                ppid: proc.parent().map(|parent| parent.as_u32()),
+                name: proc.name().to_string_lossy().to_string(),
+                age_secs: proc.run_time(),
+            })
+            .collect();
+        (system, procs)
+    };
+
+    let (system, procs) = snapshot();
+    let mut victims = collect_descendants(&procs, root);
+    victims.reverse();
+    for pid in victims.iter().chain(std::iter::once(&root)) {
+        if let Some(proc) = system.process(Pid::from_u32(*pid)) {
+            #[cfg(unix)]
+            let _ = proc.kill_with(sysinfo::Signal::Term);
+            #[cfg(not(unix))]
+            let _ = proc.kill();
+        }
+    }
+
+    std::thread::sleep(Duration::from_millis(150));
+
+    let (system, procs) = snapshot();
+    let mut remaining = collect_descendants(&procs, root);
+    remaining.reverse();
+    for pid in remaining.iter().chain(std::iter::once(&root)) {
+        if let Some(proc) = system.process(Pid::from_u32(*pid)) {
+            let _ = proc.kill();
+        }
+    }
+}
+
 #[derive(Default)]
 struct SessionManager {
     next_id: AtomicU64,
@@ -102,6 +233,8 @@ struct AppConfig {
     scrollback: u32,
     /// Starting directory for new shells; `None` = user home.
     start_cwd: Option<String>,
+    /// Warn before closing when a tab still has a running process.
+    confirm_on_running_processes: bool,
 }
 
 impl Default for AppConfig {
@@ -114,6 +247,7 @@ impl Default for AppConfig {
             cursor_blink: true,
             scrollback: 10000,
             start_cwd: None,
+            confirm_on_running_processes: true,
         }
     }
 }
@@ -227,6 +361,10 @@ fn kill_all_sessions(app: &AppHandle) {
         sessions.drain().map(|(_, session)| session).collect()
     };
     for session in drained {
+        let pid = session.child.lock().unwrap().process_id();
+        if let Some(pid) = pid {
+            kill_tree(pid);
+        }
         let _ = session.child.lock().unwrap().kill();
     }
 }
@@ -512,12 +650,75 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// Report which sessions still have a foreground job or long-lived children.
+///
+/// Frontend calls this right before closing a tab/window; the answer decides
+/// whether the confirmation dialog is shown.
+#[tauri::command]
+fn session_activity(state: State<'_, SessionManager>) -> Vec<SessionActivity> {
+    /// Prompt helpers live for milliseconds; anything older is a real job.
+    const MIN_AGE_SECS: u64 = 2;
+    #[cfg(windows)]
+    const EXCLUDED: &[&str] = &["conhost.exe", "OpenConsole.exe"];
+    #[cfg(not(windows))]
+    const EXCLUDED: &[&str] = &[];
+
+    // Grab ids/pids under the lock, then release it before touching the OS.
+    let sessions: Vec<(u64, u32, Option<u32>)> = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                let pid = session.child.lock().unwrap().process_id()?;
+                #[cfg(unix)]
+                let pgid = session.master.process_group_leader().map(|p| p as u32);
+                #[cfg(not(unix))]
+                let pgid = None;
+                Some((*id, pid, pgid))
+            })
+            .collect()
+    };
+    if sessions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All);
+    let procs: Vec<ProcInfo> = system
+        .processes()
+        .iter()
+        .map(|(pid, proc)| ProcInfo {
+            pid: pid.as_u32(),
+            ppid: proc.parent().map(|parent| parent.as_u32()),
+            name: proc.name().to_string_lossy().to_string(),
+            age_secs: proc.run_time(),
+        })
+        .collect();
+
+    sessions
+        .into_iter()
+        .map(|(id, shell_pid, pgid)| {
+            let (foreground, background) =
+                busy_activity(shell_pid, pgid, &procs, MIN_AGE_SECS, EXCLUDED);
+            SessionActivity {
+                id,
+                foreground,
+                background,
+            }
+        })
+        .collect()
+}
+
 /// Kill a session (closing the tab) and release its pty.
 #[tauri::command]
 fn kill_session(state: State<'_, SessionManager>, id: u64) -> Result<(), String> {
     // Remove under the lock, kill outside it — see `kill_all_sessions`.
     let removed = { state.sessions.lock().unwrap().remove(&id) };
     if let Some(session) = removed {
+        let pid = session.child.lock().unwrap().process_id();
+        if let Some(pid) = pid {
+            kill_tree(pid);
+        }
         let _ = session.child.lock().unwrap().kill();
     }
     Ok(())
@@ -569,7 +770,8 @@ pub fn run() {
             kill_session,
             get_config,
             save_config,
-            quit_app
+            quit_app,
+            session_activity
         ])
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::Destroyed) {
@@ -601,6 +803,77 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn proc(pid: u32, ppid: Option<u32>, name: &str, age_secs: u64) -> ProcInfo {
+        ProcInfo {
+            pid,
+            ppid,
+            name: name.to_string(),
+            age_secs,
+        }
+    }
+
+    #[test]
+    fn busy_activity_reports_foreground_job() {
+        let procs = vec![
+            proc(100, None, "zsh", 500),
+            proc(200, Some(100), "vim", 120),
+        ];
+        let (fg, bg) = busy_activity(100, Some(200), &procs, 2, &[]);
+        assert_eq!(fg, Some(ActivityProcess { pid: 200, name: "vim".into() }));
+        assert!(bg.is_empty(), "foreground pid must not repeat in background");
+    }
+
+    #[test]
+    fn busy_activity_ignores_idle_shell_and_prompt_helpers() {
+        let procs = vec![
+            proc(100, None, "zsh", 500),
+            proc(200, Some(100), "oh-my-posh", 0),
+        ];
+        // Idle shell: foreground pgid == shell pid.
+        let (fg, bg) = busy_activity(100, Some(100), &procs, 2, &[]);
+        assert_eq!(fg, None);
+        assert!(bg.is_empty(), "young helper processes are filtered out");
+    }
+
+    #[test]
+    fn busy_activity_collects_long_lived_descendants() {
+        let procs = vec![
+            proc(100, None, "zsh", 500),
+            proc(200, Some(100), "npm", 60),
+            proc(300, Some(200), "node", 59),
+            proc(400, Some(100), "git", 1),
+        ];
+        let (fg, bg) = busy_activity(100, None, &procs, 2, &[]);
+        assert_eq!(fg, None);
+        let names: Vec<_> = bg.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["node", "npm"]); // 名字排序，git 太新
+    }
+
+    #[test]
+    fn busy_activity_skips_excluded_system_processes() {
+        let procs = vec![
+            proc(100, None, "pwsh", 500),
+            proc(200, Some(100), "conhost.exe", 400),
+            proc(300, Some(100), "cargo", 90),
+        ];
+        let (_, bg) = busy_activity(100, None, &procs, 2, &["conhost.exe"]);
+        let names: Vec<_> = bg.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["cargo"]);
+    }
+
+    #[test]
+    fn collect_descendants_walks_the_whole_tree() {
+        let procs = vec![
+            proc(100, None, "zsh", 500),
+            proc(200, Some(100), "npm", 60),
+            proc(300, Some(200), "node", 59),
+            proc(400, Some(999), "unrelated", 59),
+        ];
+        let mut found = collect_descendants(&procs, 100);
+        found.sort();
+        assert_eq!(found, vec![200, 300]);
+    }
+
     #[test]
     fn app_config_defaults() {
         let c = AppConfig::default();
@@ -611,6 +884,7 @@ mod tests {
         assert!(c.cursor_blink);
         assert_eq!(c.scrollback, 10000);
         assert_eq!(c.start_cwd, None);
+        assert!(c.confirm_on_running_processes);
     }
 
     #[test]
@@ -640,6 +914,7 @@ mod tests {
             cursor_blink: false,
             scrollback: 5000,
             start_cwd: Some(r"C:\work".into()),
+            confirm_on_running_processes: false,
         };
         let json = serde_json::to_string(&c).unwrap();
         let back: AppConfig = serde_json::from_str(&json).unwrap();
@@ -650,6 +925,7 @@ mod tests {
         assert_eq!(back.cursor_blink, c.cursor_blink);
         assert_eq!(back.scrollback, c.scrollback);
         assert_eq!(back.start_cwd, c.start_cwd);
+        assert_eq!(back.confirm_on_running_processes, c.confirm_on_running_processes);
     }
 
     #[test]

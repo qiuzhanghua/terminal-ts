@@ -9,9 +9,10 @@ import { loadConfig, type AppConfig } from "./lib/config";
 import { resolveTheme, isLightTheme } from "./lib/themes";
 import { sessionCwd, spawnShell } from "./lib/session";
 import {
-  nextPendingClose,
-  renamedTabs,
-  type PendingClose,
+  buildConfirmRows,
+  type ConfirmAction,
+  type ConfirmRow,
+  type SessionActivity,
 } from "./lib/close-guard";
 import {
   applyAutoTitle,
@@ -152,7 +153,7 @@ async function syncWindowTitle(): Promise<void> {
   await appWindow.setTitle(`${displayTitle(tab)} — Terminal`);
 }
 
-async function closeTab(id: number): Promise<void> {
+async function closeTabNow(id: number): Promise<void> {
   const idx = tabs.value.findIndex((t) => t.id === id);
   if (idx === -1) return;
   tabs.value.splice(idx, 1);
@@ -164,11 +165,9 @@ async function closeTab(id: number): Promise<void> {
   if (menu.value?.tabId === id) closeMenu();
   invoke("kill_session", { id }).catch(() => {});
   if (tabs.value.length === 0) {
-    try {
-      await appWindow.close();
-    } catch (e) {
-      console.error("failed to close window:", e);
-    }
+    // shell 退出或用户确认关闭最后一个标签：直接退出。
+    // 不能走 appWindow.close()，否则会再次触发 onCloseRequested → 又弹一次确认。
+    await quitApp();
     return;
   }
   if (activeId.value === id) {
@@ -185,55 +184,115 @@ function onTitleChange(id: number, title: string): void {
 }
 
 function onExit(id: number): void {
-  // The shell in this tab exited (e.g. user typed `exit`): close the tab;
-  // when it was the last tab the whole window closes.
-  closeTab(id);
+  // shell 主动退出（用户敲 exit）不拦，也不算“关闭标签页”。
+  void closeTabNow(id);
 }
 
-/* ---------- 退出确认 ---------- */
+/* ---------- 关闭确认（改名 / 仍在运行的进程） ---------- */
 
-const pendingClose = ref<PendingClose | null>(null);
-/** 弹窗里列出的标签页；随 tabs 实时变化。 */
-const renamedForQuit = computed(() => renamedTabs(tabs.value));
+interface ConfirmState {
+  action: ConfirmAction;
+  /** 仅 action === "close-tab" 时有值。 */
+  tabId?: number;
+  rows: ConfirmRow[];
+  /** 弹窗打开那一刻的进程快照；列表随 tabs 变化，但不重新查询进程。 */
+  activity: SessionActivity[];
+}
+
+const confirmState = ref<ConfirmState | null>(null);
+const confirmOnRunning = computed(
+  () => cfg.value?.confirmOnRunningProcesses ?? true,
+);
 let unlistenCloseRequested: UnlistenFn | null = null;
 let unlistenQuitRequested: UnlistenFn | null = null;
 
-function beginQuitConfirm(kind: PendingClose): void {
-  // 行内改名还没结束就先放弃，避免草稿和弹窗状态打架。
-  if (editingId.value !== null) cancelEdit();
-  pendingClose.value = nextPendingClose(pendingClose.value, kind);
+async function fetchActivity(): Promise<SessionActivity[]> {
+  if (!confirmOnRunning.value) return [];
+  try {
+    return await invoke<SessionActivity[]>("session_activity");
+  } catch (e) {
+    // 查不到就当作没有进程：宁可少弹一次，也不能卡住关闭。
+    console.error("session_activity failed:", e);
+    return [];
+  }
 }
 
-async function confirmQuit(): Promise<void> {
-  const kind = pendingClose.value;
-  if (kind === null) return;
-  pendingClose.value = null;
-
-  // 本应用只有一个窗口，确认“关闭窗口”与“退出应用”等价；
-  // 统一交给 Rust 的 quit_app，避免再走一次 close 事件被自己拦下。
+async function quitApp(): Promise<void> {
   await invoke("quit_app").catch((e) => console.error("quit_app failed:", e));
 }
 
-function cancelQuit(): void {
-  pendingClose.value = null;
+async function requestQuit(): Promise<void> {
+  if (confirmState.value !== null) return; // 已有待处理动作，忽略重复请求
+  const activity = await fetchActivity();
+  const rows = buildConfirmRows(tabs.value, activity);
+  if (rows.length === 0) {
+    await quitApp();
+    return;
+  }
+  if (editingId.value !== null) cancelEdit();
+  confirmState.value = { action: "quit", rows, activity };
+}
+
+async function requestCloseTab(id: number): Promise<void> {
+  if (confirmState.value !== null) return;
+  const tab = tabs.value.find((t) => t.id === id);
+  if (!tab) return;
+
+  const activity = await fetchActivity();
+  const rows = buildConfirmRows(tabs.value, activity, { onlyId: id });
+  if (rows.length > 0) {
+    if (editingId.value === id) cancelEdit();
+    confirmState.value = { action: "close-tab", tabId: id, rows, activity };
+    return;
+  }
+  await closeTabNow(id);
+}
+
+async function confirmAction(): Promise<void> {
+  const state = confirmState.value;
+  if (state === null) return;
+  confirmState.value = null;
+
+  if (state.action === "quit") {
+    await quitApp();
+    return;
+  }
+  if (state.tabId != null) await closeTabNow(state.tabId);
+}
+
+function cancelConfirm(): void {
+  confirmState.value = null;
   nextTick(() => {
     const id = activeId.value;
     if (id != null) viewRefs.value[id]?.focus();
   });
 }
 
-/** 点击弹窗里的名字 = 取消退出，并切到那个标签页。 */
-async function jumpToQuitTab(id: number): Promise<void> {
-  pendingClose.value = null;
+/** 点击弹窗里的名字 = 取消本次操作，并切到那个标签页。 */
+async function jumpToConfirmTab(id: number): Promise<void> {
+  confirmState.value = null;
   await activate(id);
 }
 
-// 弹窗开着时，被保护的标签页可能因 shell 退出而消失；全没了就直接放行。
-watch(renamedForQuit, (list) => {
-  if (pendingClose.value !== null && list.length === 0) {
-    void confirmQuit();
-  }
-});
+// 弹窗开着时，被列出的标签可能因 shell 退出而消失；没有可提醒的内容就直接执行。
+watch(
+  tabs,
+  () => {
+    const state = confirmState.value;
+    if (state === null) return;
+    const rows = buildConfirmRows(
+      tabs.value,
+      state.activity,
+      state.action === "close-tab" ? { onlyId: state.tabId } : {},
+    );
+    if (rows.length === 0) {
+      void confirmAction();
+      return;
+    }
+    confirmState.value = { ...state, rows };
+  },
+  { deep: true },
+);
 
 /* ---------- tab context menu ---------- */
 
@@ -346,7 +405,7 @@ function menuResetTitle(): void {
 function menuCloseTab(): void {
   const id = menu.value?.tabId;
   closeMenu();
-  if (id != null) closeTab(id);
+  if (id != null) void requestCloseTab(id);
 }
 
 function tabTooltip(tab: Tab): string {
@@ -369,14 +428,14 @@ function onKeydown(e: KeyboardEvent): void {
   // 重命名期间所有全局快捷键让路（否则 Ctrl+Shift+W 会把正在改名的 tab 关掉）
   // 只按编辑态判断：xterm 的输入是隐藏的 <textarea class="xterm-helper-textarea">，
   // 不能因为 target 是 TEXTAREA 就让路，否则所有快捷键（F2、Ctrl+Shift+T…）都会被吞。
-  if (editingId.value !== null || menu.value !== null || pendingClose.value !== null) return;
+  if (editingId.value !== null || menu.value !== null || confirmState.value !== null) return;
 
   if (e.ctrlKey && e.shiftKey && e.key === "T") {
     e.preventDefault();
     addTab();
   } else if (e.ctrlKey && e.shiftKey && e.key === "W") {
     e.preventDefault();
-    if (activeId.value != null) closeTab(activeId.value);
+    if (activeId.value != null) void requestCloseTab(activeId.value);
   } else if (e.ctrlKey && e.key === "Tab") {
     e.preventDefault();
     switchTab(e.shiftKey ? -1 : 1);
@@ -406,26 +465,16 @@ onMounted(async () => {
   addTab();
   window.addEventListener("keydown", onKeydown, true);
 
-  // 窗口关闭（X / Alt+F4）：有改过名的标签页才拦。
+  // 窗口关闭（X / Alt+F4）：注册了监听就等于接管关闭——不 preventDefault 时
+  // Tauri 的 JS 包装会自己调 destroy()（需要额外权限），所以统一拦下再决定。
   unlistenCloseRequested = await appWindow.onCloseRequested((event) => {
-    // 注册了监听就等于接管关闭：不 preventDefault 时 API 会自己调 destroy()，
-    // 而 destroy 需要额外权限，所以这里统一拦下、统一走 quit_app。
     event.preventDefault();
-    if (renamedForQuit.value.length === 0) {
-      void invoke("quit_app").catch((e) => console.error("quit_app failed:", e));
-      return;
-    }
-    beginQuitConfirm("close-window");
+    void requestQuit();
   });
 
   // macOS Cmd+Q：Rust 侧 prevent_exit 后转发到前端，复用同一个弹窗。
   unlistenQuitRequested = await listen("quit-requested", () => {
-    if (pendingClose.value !== null) return;
-    if (renamedForQuit.value.length === 0) {
-      void invoke("quit_app").catch((e) => console.error("quit_app failed:", e));
-      return;
-    }
-    beginQuitConfirm("quit-app");
+    void requestQuit();
   });
 });
 
@@ -448,7 +497,7 @@ onBeforeUnmount(() => {
         @click="onTabClick(tab.id)"
         @dblclick="onTabDblClick($event, tab.id)"
         @contextmenu="openMenu($event, tab.id)"
-        @auxclick="(e: MouseEvent) => { if (e.button === 1) closeTab(tab.id); }"
+        @auxclick="(e: MouseEvent) => { if (e.button === 1) void requestCloseTab(tab.id); }"
       >
         <input
           v-if="tab.id === editingId"
@@ -467,7 +516,7 @@ onBeforeUnmount(() => {
         <span v-else class="tab-title" :class="{ custom: tab.customTitle !== null }">
           {{ displayTitle(tab) }}
         </span>
-        <button class="tab-close" title="关闭标签页" @click.stop="closeTab(tab.id)">×</button>
+        <button class="tab-close" title="关闭标签页" @click.stop="requestCloseTab(tab.id)">×</button>
       </div>
       <button class="tab-add" title="新建标签页" @click="addTab()">＋</button>
     </div>
@@ -519,12 +568,13 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <QuitConfirmDialog
-      v-if="pendingClose"
-      :tabs="renamedForQuit"
+      v-if="confirmState"
+      :rows="confirmState.rows"
+      :action="confirmState.action"
       :active-id="activeId"
-      @cancel="cancelQuit"
-      @confirm="confirmQuit"
-      @jump="jumpToQuitTab"
+      @cancel="cancelConfirm"
+      @confirm="confirmAction"
+      @jump="jumpToConfirmTab"
     />
   </div>
 </template>

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import type { RenamedTab } from "../lib/close-guard";
+import type { ConfirmAction, ConfirmRow } from "../lib/close-guard";
 
 const props = defineProps<{
-  tabs: RenamedTab[];
+  rows: ConfirmRow[];
+  action: ConfirmAction;
   activeId: number | null;
 }>();
 
@@ -15,6 +16,8 @@ const emit = defineEmits<{
 
 const dialogEl = ref<HTMLElement | null>(null);
 const cancelBtn = ref<HTMLButtonElement | null>(null);
+
+const isQuit = () => props.action === "quit";
 
 /** Esc 取消；Tab 在弹窗内循环，避免焦点跑到背后的终端。 */
 function onKeydown(e: KeyboardEvent): void {
@@ -48,7 +51,7 @@ function onKeydown(e: KeyboardEvent): void {
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown, true);
   await nextTick();
-  // 默认焦点落在「取消」上：误按 Enter 不会退出。
+  // 默认焦点落在「取消」上：误按 Enter 不会关闭。
   cancelBtn.value?.focus();
 });
 
@@ -67,28 +70,47 @@ onBeforeUnmount(() => {
       aria-labelledby="quit-title"
       aria-describedby="quit-desc"
     >
-      <h2 id="quit-title" class="quit-title">退出确认</h2>
-      <p id="quit-desc" class="quit-text">以下标签页使用了自定义标题：</p>
+      <h2 id="quit-title" class="quit-title">
+        {{ isQuit() ? "退出确认" : "关闭标签页" }}
+      </h2>
+      <p id="quit-desc" class="quit-text">
+        {{ isQuit() ? "以下标签页有自定义标题或仍在运行进程：" : "这个标签页仍在运行进程：" }}
+      </p>
 
       <ul class="quit-list">
-        <li v-for="tab in props.tabs" :key="tab.id">
+        <li v-for="row in props.rows" :key="row.id">
           <button
             class="quit-row"
-            :class="{ active: tab.id === props.activeId }"
-            :aria-label="`${tab.title}（${tab.shellTitle}）`"
-            @click="emit('jump', tab.id)"
+            :class="{ active: row.id === props.activeId }"
+            :aria-label="`${row.title}（${row.shellTitle}）`"
+            @click="emit('jump', row.id)"
           >
-            <span class="quit-row-title">{{ tab.title }}</span>
-            <span class="quit-row-sub">{{ tab.shellTitle }}</span>
+            <span class="quit-row-head">
+              <span class="quit-row-title">{{ row.title }}</span>
+              <span class="quit-badges">
+                <span v-if="row.custom" class="quit-badge">自定义标题</span>
+                <span v-if="row.foreground" class="quit-badge running">
+                  运行中 {{ row.foreground.name }}
+                </span>
+                <span v-if="row.background.length" class="quit-badge running">
+                  后台 {{ row.background.length }} 个进程
+                </span>
+              </span>
+            </span>
+            <span class="quit-row-sub">{{ row.shellTitle }}</span>
           </button>
         </li>
       </ul>
 
-      <p class="quit-note">退出会结束所有终端会话。</p>
+      <p class="quit-note">
+        {{ isQuit() ? "退出会结束所有终端会话。" : "关闭会结束这个标签页里的进程。" }}
+      </p>
 
       <div class="quit-actions">
         <button ref="cancelBtn" class="quit-btn" @click="emit('cancel')">取消</button>
-        <button class="quit-btn danger" @click="emit('confirm')">仍要退出</button>
+        <button class="quit-btn danger" @click="emit('confirm')">
+          {{ isQuit() ? "仍要退出" : "仍要关闭" }}
+        </button>
       </div>
     </div>
   </div>
@@ -106,7 +128,7 @@ onBeforeUnmount(() => {
 }
 
 .quit-dialog {
-  width: min(520px, calc(100vw - 48px));
+  width: min(560px, calc(100vw - 48px));
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
@@ -147,7 +169,7 @@ onBeforeUnmount(() => {
 .quit-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   width: 100%;
   padding: 8px 12px;
   font: inherit;
@@ -168,8 +190,35 @@ onBeforeUnmount(() => {
   box-shadow: inset 3px 0 0 var(--fg-dim);
 }
 
+.quit-row-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .quit-row-title {
   font-weight: 550;
+}
+
+.quit-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quit-badge {
+  padding: 0 6px;
+  font-size: 0.72em;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.quit-badge.running {
+  color: #e0b341;
+  border-color: #a07d1c;
 }
 
 .quit-row-sub {

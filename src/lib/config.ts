@@ -9,6 +9,8 @@ export interface AppConfig {
   cursorBlink: boolean;
   scrollback: number;
   startCwd: string | null;
+  /** 关闭窗口 / 关标签时，有仍在运行的进程是否也要确认。 */
+  confirmOnRunningProcesses: boolean;
 }
 
 export interface ConfigPayload {
@@ -30,6 +32,7 @@ export interface RawConfig {
   cursor_blink?: boolean;
   scrollback?: number;
   start_cwd?: string | null;
+  confirm_on_running_processes?: boolean;
 }
 
 /** Rust 侧 `AppConfig::default()` 的镜像，配置缺字段时用它兜底。 */
@@ -41,6 +44,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   cursorBlink: true,
   scrollback: 10000,
   startCwd: null,
+  confirmOnRunningProcesses: true,
 };
 
 export function fromRaw(raw: RawConfig): AppConfig {
@@ -52,6 +56,8 @@ export function fromRaw(raw: RawConfig): AppConfig {
     cursorBlink: raw.cursor_blink ?? DEFAULT_CONFIG.cursorBlink,
     scrollback: raw.scrollback ?? DEFAULT_CONFIG.scrollback,
     startCwd: raw.start_cwd ?? DEFAULT_CONFIG.startCwd,
+    confirmOnRunningProcesses:
+      raw.confirm_on_running_processes ?? DEFAULT_CONFIG.confirmOnRunningProcesses,
   };
 }
 
@@ -64,6 +70,7 @@ export function toRaw(config: AppConfig): RawConfig {
     cursor_blink: config.cursorBlink,
     scrollback: config.scrollback,
     start_cwd: config.startCwd,
+    confirm_on_running_processes: config.confirmOnRunningProcesses,
   };
 }
 

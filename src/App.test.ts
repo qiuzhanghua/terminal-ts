@@ -21,6 +21,17 @@ const mocks = vi.hoisted(() => ({
   focus: vi.fn(),
   closeHandler: null as ((e: { preventDefault: () => void }) => void) | null,
   quitHandler: null as (() => void) | null,
+  activity: [] as unknown[],
+  config: {
+    shell: null,
+    fontSize: 17,
+    fontFamily: null,
+    theme: "dark",
+    cursorBlink: true,
+    scrollback: 10000,
+    startCwd: null,
+    confirmOnRunningProcesses: true,
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
@@ -45,15 +56,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 vi.mock("./lib/config", () => ({
-  loadConfig: async () => ({
-    config: {
-      theme: "dark",
-      fontSize: 17,
-      fontFamily: null,
-      cursorBlink: true,
-      scrollback: 10000,
-    },
-  }),
+  loadConfig: async () => ({ config: mocks.config, path: "" }),
 }));
 
 vi.mock("./components/TerminalView.vue", async () => {
@@ -86,8 +89,20 @@ let nextSessionId = 0;
 beforeEach(() => {
   vi.clearAllMocks();
   nextSessionId = 0;
+  mocks.activity = [];
+  mocks.config = {
+    shell: null,
+    fontSize: 17,
+    fontFamily: null,
+    theme: "dark",
+    cursorBlink: true,
+    scrollback: 10000,
+    startCwd: null,
+    confirmOnRunningProcesses: true,
+  };
   mocks.invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "spawn_shell") return ++nextSessionId;
+    if (cmd === "session_activity") return mocks.activity;
     return null;
   });
 });
@@ -328,11 +343,11 @@ describe("快捷键让路", () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith("kill_session", expect.anything());
   });
 
-  it("不在编辑时 Ctrl+Shift+W 照常关闭最后一个标签页", async () => {
+  it("不在编辑时 Ctrl+Shift+W 照常关闭最后一个标签页（直接退出）", async () => {
     await mountApp();
     press("W", { ctrlKey: true, shiftKey: true });
     await flushPromises();
-    expect(mocks.close).toHaveBeenCalled();
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
   });
 });
 
@@ -419,6 +434,69 @@ describe("退出确认", () => {
     await w.find(".quit-btn.danger").trigger("click");
     await flushPromises();
 
+    expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
+  });
+
+  it("有运行中进程（没改名）也会拦下并显示运行中 badge", async () => {
+    const w = await mountApp();
+    mocks.activity = [{ id: 1, foreground: { pid: 9, name: "cargo" }, background: [] }];
+
+    expect(await requestWindowClose()).toBe(true);
+    const dialog = w.find(".quit-dialog");
+    expect(dialog.exists()).toBe(true);
+    const badges = dialog.findAll(".quit-badge").map((b) => b.text());
+    expect(badges).toContain("运行中 cargo");
+  });
+
+  it("关闭单个有进程的标签会先确认，确认后才 kill_session", async () => {
+    const w = await mountApp();
+    mocks.activity = [{ id: 1, foreground: { pid: 9, name: "cargo" }, background: [] }];
+
+    await w.find(".tab-close").trigger("click");
+    await flushPromises();
+
+    expect(w.find(".quit-dialog").exists()).toBe(true);
+    expect(w.find(".quit-title").text()).toBe("关闭标签页");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("kill_session", expect.anything());
+
+    await w.find(".quit-btn.danger").trigger("click");
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("kill_session", { id: 1 });
+  });
+
+  it("关闭空闲标签不弹窗", async () => {
+    const w = await mountApp();
+    await w.find(".tab-close").trigger("click");
+    await flushPromises();
+
+    expect(w.find(".quit-dialog").exists()).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("kill_session", { id: 1 });
+  });
+
+  it("仅改过名但空闲的标签，关闭时不弹窗", async () => {
+    const w = await mountApp();
+    await renameTo(w, "构建");
+    await w.find(".tab-close").trigger("click");
+    await flushPromises();
+
+    expect(w.find(".quit-dialog").exists()).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("kill_session", { id: 1 });
+  });
+
+  it("confirm_on_running_processes=false 时进程不再触发提醒", async () => {
+    const w = await mountApp();
+    mocks.config.confirmOnRunningProcesses = false;
+    mocks.activity = [{ id: 1, foreground: { pid: 9, name: "cargo" }, background: [] }];
+
+    // 配置在挂载时读取，这里重新挂载以生效
+    w.unmount();
+    const w2 = await mountApp();
+    mocks.activity = [{ id: 1, foreground: { pid: 9, name: "cargo" }, background: [] }];
+    await w2.vm.$nextTick();
+
+    expect(await requestWindowClose()).toBe(true);
+    expect(w2.find(".quit-dialog").exists()).toBe(false);
     expect(mocks.invoke).toHaveBeenCalledWith("quit_app");
   });
 

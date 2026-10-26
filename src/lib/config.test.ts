@@ -23,6 +23,7 @@ describe("loadConfig", () => {
         cursor_blink: false,
         scrollback: 20000,
         start_cwd: "/home/q",
+        confirm_on_running_processes: false,
       },
       path: "/home/q/.config/dev.taiji.terminal/config.json",
     });
@@ -38,6 +39,7 @@ describe("loadConfig", () => {
       cursorBlink: false,
       scrollback: 20000,
       startCwd: "/home/q",
+      confirmOnRunningProcesses: false,
     });
     expect(path).toBe("/home/q/.config/dev.taiji.terminal/config.json");
   });
@@ -71,6 +73,7 @@ describe("saveConfig", () => {
       cursorBlink: true,
       scrollback: 10000,
       startCwd: null,
+      confirmOnRunningProcesses: true,
     });
 
     expect(invoke).toHaveBeenCalledWith("save_config", {
@@ -82,6 +85,7 @@ describe("saveConfig", () => {
         cursor_blink: true,
         scrollback: 10000,
         start_cwd: null,
+        confirm_on_running_processes: true,
       },
     });
   });
