@@ -819,8 +819,17 @@ mod tests {
             proc(200, Some(100), "vim", 120),
         ];
         let (fg, bg) = busy_activity(100, Some(200), &procs, 2, &[]);
-        assert_eq!(fg, Some(ActivityProcess { pid: 200, name: "vim".into() }));
-        assert!(bg.is_empty(), "foreground pid must not repeat in background");
+        assert_eq!(
+            fg,
+            Some(ActivityProcess {
+                pid: 200,
+                name: "vim".into()
+            })
+        );
+        assert!(
+            bg.is_empty(),
+            "foreground pid must not repeat in background"
+        );
     }
 
     #[test]
@@ -925,7 +934,10 @@ mod tests {
         assert_eq!(back.cursor_blink, c.cursor_blink);
         assert_eq!(back.scrollback, c.scrollback);
         assert_eq!(back.start_cwd, c.start_cwd);
-        assert_eq!(back.confirm_on_running_processes, c.confirm_on_running_processes);
+        assert_eq!(
+            back.confirm_on_running_processes,
+            c.confirm_on_running_processes
+        );
     }
 
     #[test]
