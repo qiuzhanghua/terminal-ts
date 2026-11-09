@@ -5,9 +5,9 @@ A desktop terminal emulator built with [Tauri 2](https://tauri.app).
 
 ## 功能 / Features
 
-- **Shell 自动检测 / Automatic shell detection**（与原项目一致 / same as the original project）：
+- **Shell 自动检测 / Automatic shell detection**：
   - Windows: 优先级 `pwsh` → `powershell` → `cmd` (priority order)
-  - 非 Windows: 读取 `$SHELL` 环境变量，默认 `/bin/bash` / reads `$SHELL`, falls back to `/bin/bash`
+  - 非 Windows: 父进程链里最近的交互式 shell → 账号登录 shell（macOS 查 `dscl`，其他系统查 `/etc/passwd`）→ `$SHELL` → `/bin/sh`；配置里的 `shell` 仍最优先 / on Unix: the nearest interactive shell in the parent chain → the account's login shell (`dscl` on macOS, `/etc/passwd` elsewhere) → `$SHELL` → `/bin/sh`; a configured `shell` still wins
 - **真实 PTY 会话 / Real PTY sessions**：Windows 使用 ConPTY，其他平台使用 Unix PTY，交互式程序（vim、htop 等）完整可用 / ConPTY on Windows, Unix PTY elsewhere; interactive programs (vim, htop, …) work fully
 - **支持管道、重定向 / Pipes & redirection**：`ls -la | grep rust`、`echo hello > file.txt`、`cat < input.txt`
 - **多标签页 / Multiple tabs**：新建（＋ / Ctrl+Shift+T）、关闭（× / 鼠标中键 / Ctrl+Shift+W）、切换（Ctrl+Tab / Ctrl+PageUp·PageDown）/ new (＋ / Ctrl+Shift+T), close (× / middle-click / Ctrl+Shift+W), switch (Ctrl+Tab / Ctrl+PageUp·PageDown)

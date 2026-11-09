@@ -1,8 +1,10 @@
 //! Tauri backend for the terminal emulator.
 //!
-//! Mirrors the shell-detection logic of the original `terminal` CLI project:
-//! - Windows: pwsh -> powershell -> cmd
-//! - Other: `$SHELL` env var, falling back to `/bin/bash`
+//! Shell detection lives in [`shell`]: on Unix it prefers the interactive shell
+//! in the parent process chain, then the login shell from the user database,
+//! then `$SHELL`, then `/bin/sh` (the original `$SHELL`-or-`/bin/bash` rule is a
+//! trap: a GUI launch inherits `/bin/bash` on macOS). Windows keeps the
+//! pwsh -> powershell -> cmd order.
 //!
 //! Each tab owns one real PTY session (ConPTY on Windows), streamed to the
 //! frontend via `terminal-output` / `terminal-exit` events.
@@ -18,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
+
+mod shell;
 
 /// Max bytes read from the pty per `terminal-output` event. Output is
 /// base64-encoded, so larger chunks stay compact on the wire.
@@ -290,24 +294,6 @@ fn load_config(app: &AppHandle) -> AppConfig {
     }
 }
 
-/// Same shell detection as the original `terminal` project.
-fn detect_shell() -> String {
-    #[cfg(windows)]
-    {
-        if which::which("pwsh").is_ok() {
-            "pwsh".to_string()
-        } else if which::which("powershell").is_ok() {
-            "powershell".to_string()
-        } else {
-            "cmd".to_string()
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
-    }
-}
-
 /// Current working directory of the process `pid`, or `None` when it cannot be
 /// read (process already gone, or the OS does not expose it for that process).
 ///
@@ -384,9 +370,9 @@ fn spawn_shell(
 ) -> Result<u64, String> {
     let config = load_config(&app);
     // User-configured shell wins; fall back to detection if it's not on PATH.
-    let shell = match &config.shell {
-        Some(s) if which::which(s).is_ok() => s.clone(),
-        _ => detect_shell(),
+    let shell: PathBuf = match &config.shell {
+        Some(s) if which::which(s).is_ok() => PathBuf::from(s),
+        _ => shell::detect(),
     };
 
     let pair = native_pty_system()
@@ -407,18 +393,30 @@ fn spawn_shell(
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);
     }
+    // `SHELL` in the child must name the shell we are actually running: nested
+    // shells and `$SHELL`-aware scripts read it, and the inherited value names
+    // the login shell (on macOS a GUI launch still says `/bin/bash`).
+    #[cfg(unix)]
+    cmd.env(
+        "SHELL",
+        which::which(&shell).unwrap_or_else(|_| shell.clone()),
+    );
     // Suppress pwsh startup noise: version banner, update notice and
     // profile-load-time message. Also force $PSStyle.OutputRendering='Ansi':
     // under ConPTY pwsh's first prompt is otherwise rendered without colors
     // ('Host' strips ANSI), which breaks oh-my-posh segments.
-    if shell == "pwsh" {
+    let shell_name = shell
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if shell_name == "pwsh" {
         cmd.arg("-NoLogo");
         cmd.arg("-NoProfileLoadTime");
         cmd.arg("-NoExit");
         cmd.arg("-Command");
         cmd.arg("$PSStyle.OutputRendering='Ansi'");
         cmd.env("POWERSHELL_UPDATECHECK", "Off");
-    } else if shell == "powershell" {
+    } else if shell_name == "powershell" {
         cmd.arg("-NoLogo");
         cmd.env("POWERSHELL_UPDATECHECK", "Off");
     }
@@ -431,7 +429,7 @@ fn spawn_shell(
     let child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| format!("failed to spawn `{shell}`: {e}"))?;
+        .map_err(|e| format!("failed to spawn `{}`: {e}", shell.display()))?;
     drop(pair.slave);
 
     let reader = pair

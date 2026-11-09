@@ -34,3 +34,8 @@ dirs = "6"
 # feature set would also pull in disks / networks / users / components and
 # rayon, none of which this app touches.
 sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+
+# `getpwuid_r` for the login-shell layer of shell detection. Unix-only: the
+# Windows build must not pull in a C toolchain dependency it cannot use.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
