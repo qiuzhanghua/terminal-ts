@@ -282,16 +282,20 @@ mod tests {
 
     #[test]
     fn enclosing_shell_finds_the_nearest_interactive_shell() {
-        // self -> python3 -> sh -> zsh: the `sh` wrapper must not match, and
-        // the walk must keep going to zsh.
+        // self -> python3 -> sh -> bash: the `sh` wrapper must not match, and
+        // the walk must keep going to bash. bash, not zsh: the CI runners have
+        // bash everywhere and zsh nowhere.
+        if !is_executable(Path::new("/bin/bash")) {
+            return;
+        }
         let table = table(&[
             (100, 101, Some("/usr/bin/python3")),
             (101, 102, Some("/bin/sh")),
-            (102, 103, Some("/bin/zsh")),
+            (102, 103, Some("/bin/bash")),
         ]);
         assert_eq!(
             enclosing_shell(&table, 100),
-            Some(PathBuf::from("/bin/zsh"))
+            Some(PathBuf::from("/bin/bash"))
         );
     }
 
